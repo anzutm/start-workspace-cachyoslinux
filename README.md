@@ -4,7 +4,7 @@ GUI and Bash scripts to set up (`setup-workspace-gui` / `setup-workspace`), auto
 
 ## Features
 
-- **Native KDE Plasma / PyQt6 GUI (`setup-workspace-gui`)**: visually add, edit, remove, and reorder apps, **pick installed apps** from your system menu, **pick open KWin windows** to auto-fill `resourceClass`, toggle login autostart, load presets, and test launching/stopping your workspace.
+- **Beginner-Friendly KDE Plasma / PyQt6 GUI (`setup-workspace-gui`)**: clean Desktop tabs (`All`, `Desktop 1`, `Desktop 2`, `Desktop 3`), app icons, plain-English behavior labels, **Choose Installed App...** picker, collapsible **Advanced Settings** with **Detect Open Window...**, right-click **Move to Desktop**, one-click login autostart, and **Start / Stop Workspace** buttons.
 - **Terminal Setup Wizard & CLI (`setup-workspace`)**: auto-detects installed apps (`init --preset auto|minimal|personal`), manages entries from the terminal, installs CLI & App Launcher shortcuts, checks system dependencies (`doctor`), and creates missing KDE Virtual Desktops.
 - **Idempotent launching**: checks running processes with `pgrep -f` so already-open applications are not launched again.
 - **Wayland-native window placement**: uses KWin Scripting (`org.kde.kwin.Scripting`) to move windows to their assigned Virtual Desktops by `resourceClass` / `resourceName`, then switches focus back to Desktop 1.
@@ -13,7 +13,7 @@ GUI and Bash scripts to set up (`setup-workspace-gui` / `setup-workspace`), auto
 
 ## Default Virtual Desktop Layout
 
-Make sure KDE Plasma has at least **3 Virtual Desktops** configured (or click **Ensure Desktops** in the GUI / run `./setup-workspace ensure-desktops`). When initialized with the default `auto` preset, setup detects which editors, terminals, file managers, browsers, and utilities are installed on your system:
+Make sure KDE Plasma has at least **3 Virtual Desktops** configured (or click **Create Missing Desktops** in the GUI / run `./setup-workspace ensure-desktops`). When initialized with the default `auto` preset, setup detects which editors, terminals, file managers, browsers, and utilities are installed on your system:
 
 | Desktop | Category | Example Apps |
 | :--- | :--- | :--- |
@@ -53,12 +53,14 @@ To install the CLI commands into `~/.local/bin` **and** add **Workspace Setup** 
 
 ### GUI Setup (`setup-workspace-gui`)
 
-Launch the graphical manager with `./setup-workspace gui` (or `./setup-workspace-gui`, or search **Workspace Setup** in your application launcher after running `install`):
+Launch the graphical manager with `./setup-workspace gui` (or `./setup-workspace-gui`, or search **Workspace Setup** in your application launcher after clicking **Add to Start Menu & Terminal** / running `install`):
 
-- **Add App → Pick Installed App...**: pick any installed app from your system menu to auto-fill Name, Command, Process Pattern, and KWin Window Classes.
-- **Add App → Pick Open Window...**: click an already-open window to grab its exact Wayland `resourceClass` / `resourceName` and Virtual Desktop.
-- **Load Preset**: switch between `auto` (system-detected apps), `minimal`, or `personal`.
-- **Start workspace automatically on login**: one-click KDE autostart toggle.
+- **Desktop tabs & clean view**: filter by `All`, `Desktop 1`, `Desktop 2`, `Desktop 3`, or `Stop Only`, right-click any row to move it between desktops, or check **Show technical details** when you need to inspect commands and window classes.
+- **Add App → Choose Installed App...**: pick any installed app from your system menu to auto-fill App Name, Launch Command, Process Pattern, and KWin Window Classes.
+- **Add App → Choose Custom File / Script...**: browse for an AppImage, local binary, or custom script.
+- **Advanced Settings → Detect Open Window...**: double-click an already-open window to grab its exact Wayland `resourceClass` / `resourceName` and Virtual Desktop.
+- **Tools menu**: reset with a preset (`auto`, `minimal`, `personal`), run **Check System Health (Doctor)**, inspect open windows, or open the config folder.
+- **Start workspace automatically when I log in**: one-click KDE autostart toggle.
 
 ### Terminal Setup (`setup-workspace`)
 
