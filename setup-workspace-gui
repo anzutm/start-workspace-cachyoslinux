@@ -322,15 +322,22 @@ class AppPickerDialog(QDialog):
         self.list_widget.clear()
         q = query.strip().lower()
         for app in self.apps:
-            if q and q not in app["name"].lower() and q not in app["exec"].lower():
+            # search across name, exec path, and the basename of the executable
+            exec_base = Path(app["exec"].split()[0]).name if app["exec"] else ""
+            if q and q not in app["name"].lower() and q not in app["exec"].lower() and q not in exec_base.lower():
                 continue
-            item = QListWidgetItem(f"{app['name']}  —  {app['exec']}")
+            # Show name and just the executable basename for readability
+            display = f"{app['name']}  ({exec_base})" if exec_base != app["exec"] else f"{app['name']}  —  {app['exec']}"
+            item = QListWidgetItem(display)
             if app["icon"]:
                 icon = QIcon.fromTheme(app["icon"])
                 if not icon.isNull():
                     item.setIcon(icon)
             item.setData(Qt.ItemDataRole.UserRole, app)
             self.list_widget.addItem(item)
+        # Auto-select first visible item for keyboard usability
+        if self.list_widget.count() > 0:
+            self.list_widget.setCurrentRow(0)
 
     def _filter(self, text: str) -> None:
         self._populate(text)
@@ -338,9 +345,13 @@ class AppPickerDialog(QDialog):
     def _accept_selected(self) -> None:
         item = self.list_widget.currentItem()
         if not item:
-            return
-        self.selected_app = item.data(Qt.ItemDataRole.UserRole)
-        self.accept()
+            if self.list_widget.count() == 0:
+                return  # Nothing to pick
+            self.list_widget.setCurrentRow(0)
+            item = self.list_widget.currentItem()
+        if item:
+            self.selected_app = item.data(Qt.ItemDataRole.UserRole)
+            self.accept()
 
 
 class OpenWindowPickerDialog(QDialog):
@@ -743,25 +754,36 @@ class MainWindow(QMainWindow):
 
     def _edit_selected(self) -> None:
         row = self.table.currentRow()
-        if row < 0 or row >= len(self.entries):
+        if row < 0:
             QMessageBox.information(self, "Edit", "Please select an application row first.")
             return
-        dlg = EntryDialog(self.entries[row], parent=self)
+        # snapshot index before any reload
+        entry = self.entries[row] if row < len(self.entries) else None
+        if entry is None:
+            return
+        dlg = EntryDialog(entry, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self.entries[row] = dlg.build_entry()
             self._persist(f"Updated '{self.entries[row].name}'.")
-            self.table.selectRow(row)
+            self.table.selectRow(min(row, self.table.rowCount() - 1))
 
     def _remove_selected(self) -> None:
         row = self.table.currentRow()
-        if row < 0 or row >= len(self.entries):
+        if row < 0:
             QMessageBox.information(self, "Remove", "Please select an application row first.")
             return
-        name = self.entries[row].name
+        entry = self.entries[row] if row < len(self.entries) else None
+        if entry is None:
+            return
+        name = entry.name
         ans = QMessageBox.question(self, "Confirm Removal", f"Remove '{name}' from workspace configuration?")
         if ans == QMessageBox.StandardButton.Yes:
             del self.entries[row]
             self._persist(f"Removed '{name}'.")
+            # Keep selection on same row (or last row if we deleted the last)
+            new_row = min(row, self.table.rowCount() - 1)
+            if new_row >= 0:
+                self.table.selectRow(new_row)
 
     def _move_selected(self, delta: int) -> None:
         row = self.table.currentRow()
@@ -837,11 +859,12 @@ class MainWindow(QMainWindow):
         self.proc.start(cmd[0], cmd[1:])
 
     def _on_proc_finished(self, label: str, code: int) -> None:
-        output = bytes(self.proc.readAllStandardOutput()).decode("utf-8", errors="ignore") if self.proc else ""
+        # MergedChannels sends all output to stdout channel; readAll() reads whatever is buffered
+        output = bytes(self.proc.readAll()).decode("utf-8", errors="ignore") if self.proc else ""
         if code == 0:
             self.statusBar().showMessage(f"{label}: done.", 4000)
         else:
-            CommandOutputDialog(f"{label} (exit {code})", output, self).exec()
+            CommandOutputDialog(f"{label} (exit {code})", output or "(no output captured)", self).exec()
 
 
 def main() -> int:
