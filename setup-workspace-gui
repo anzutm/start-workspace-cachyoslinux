@@ -560,10 +560,16 @@ class EntryDialog(QDialog):
             if "close_only" in fset or entry.desktop == 0:
                 self.close_only_cb.setChecked(True)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self._validate_and_accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        save_btn = QPushButton(QIcon.fromTheme("document-save"), "Save App")
+        save_btn.setDefault(True)
+        save_btn.clicked.connect(self._validate_and_accept)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(save_btn)
+        layout.addLayout(btn_row)
 
     def _toggle_advanced(self, checked: bool) -> None:
         self.adv_widget.setVisible(checked)
@@ -814,6 +820,10 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(QIcon.fromTheme("edit-delete"), "Remove Start Menu & Terminal Shortcuts", self._uninstall_cli)
         tools_btn.setMenu(tools_menu)
 
+        save_btn = QPushButton(QIcon.fromTheme("document-save"), "Save")
+        save_btn.setMinimumHeight(34)
+        save_btn.clicked.connect(self._save_manual)
+
         start_btn = QPushButton(QIcon.fromTheme("media-playback-start"), "Start Workspace")
         start_btn.setMinimumHeight(34)
         start_btn.clicked.connect(lambda: self._run_async([str(START_CLI)], "Starting Workspace"))
@@ -824,6 +834,7 @@ class MainWindow(QMainWindow):
 
         bottom.addWidget(tools_btn)
         bottom.addStretch()
+        bottom.addWidget(save_btn)
         bottom.addWidget(stop_btn)
         bottom.addWidget(start_btn)
         root.addLayout(bottom)
@@ -833,6 +844,7 @@ class MainWindow(QMainWindow):
 
         self._toggle_technical_columns(False)
         self._reload()
+        self.statusBar().showMessage(f"Ready • Config: {CONFIG_FILE}")
 
     def _toggle_technical_columns(self, show: bool) -> None:
         self.table.setColumnHidden(3, not show)
@@ -943,7 +955,11 @@ class MainWindow(QMainWindow):
     def _persist(self, message: str) -> None:
         save_config(self.entries)
         self._reload()
-        self.statusBar().showMessage(message, 4000)
+        self.statusBar().showMessage(f"✓ {message} (Saved to {CONFIG_FILE})", 5000)
+
+    def _save_manual(self) -> None:
+        save_config(self.entries)
+        self.statusBar().showMessage(f"✓ Configuration saved to {CONFIG_FILE}", 5000)
 
     def _add_entry(self) -> None:
         filt = self._current_filter()
