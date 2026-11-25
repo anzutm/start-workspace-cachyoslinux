@@ -4,7 +4,7 @@ Bash scripts to set up (`setup-workspace`), automatically launch (`start-workspa
 
 ## Features
 
-- **Terminal Setup Wizard & CLI (`setup-workspace`)**: initialize configuration, add/remove workspace apps, install CLI symlinks to `~/.local/bin`, verify dependencies (`doctor`), and create missing KDE Virtual Desktops directly from the terminal.
+- **Terminal Setup Wizard & CLI (`setup-workspace`)**: auto-detects installed apps (`init --preset auto|minimal|personal`), lets you add/edit/remove apps, inspects live KWin window classes (`windows`), manages login autostart, installs CLI symlinks to `~/.local/bin`, checks system dependencies (`doctor`), and creates missing KDE Virtual Desktops.
 - **Idempotent launching**: checks running processes with `pgrep -f` so already-open applications are not launched again.
 - **Wayland-native window placement**: uses KWin Scripting (`org.kde.kwin.Scripting`) to move windows to their assigned Virtual Desktops by `resourceClass` / `resourceName`, then switches focus back to Desktop 1.
 - **Graceful & forced shutdown**: `stop-workspace` first closes windows cleanly via `c.closeWindow()` in KWin, then terminates any remaining background processes (or force-kills them with `-f`/`--force`).
@@ -12,15 +12,13 @@ Bash scripts to set up (`setup-workspace`), automatically launch (`start-workspa
 
 ## Default Virtual Desktop Layout
 
-Make sure KDE Plasma has at least **3 Virtual Desktops** configured (or run `./setup-workspace ensure-desktops`).
+Make sure KDE Plasma has at least **3 Virtual Desktops** configured (or run `./setup-workspace ensure-desktops`). When initialized with the default `auto` preset, `setup-workspace` detects which editors, terminals, file managers, browsers, and utilities are installed on your system:
 
-| Desktop | Category | Apps in Default Setup |
+| Desktop | Category | Example Apps |
 | :--- | :--- | :--- |
-| **Desktop 1** | Coding & Notes | Antigravity IDE (`glass-dock-widget`), Ptyxis Terminal, GNOME Text Editor (`Cachyos Gnome Command.md`), Nautilus / Dolphin |
-| **Desktop 2** | Entertainment & Web | Chromium Browser, AniBase (`AniBase v1.5.5`) |
-| **Desktop 3** | System, Utilities & Gaming | Twintail Launcher (Flatpak `app.twintaillauncher.ttl`), Omen Space (`omen-gui`) |
-
-> **Note:** `stop-workspace` also handles closing additional targets such as Brave Browser (`brave-browser`), Wuthering Waves (`client-win64-shipping.exe`), and Resources Monitor (`org.gnome.Resources` / `resources`).
+| **Desktop 1** | Coding & Notes | Antigravity IDE / VS Code / VSCodium / Zed, Ptyxis / Konsole / Kitty / Alacritty, GNOME Text Editor / Kate, Nautilus / Dolphin / Thunar |
+| **Desktop 2** | Entertainment & Web | Chromium / Firefox / Brave / Chrome / Zen Browser |
+| **Desktop 3** | System, Utilities & Gaming | Steam / Lutris / Flatpak launchers, System Monitor / Resources |
 
 ## Requirements
 
@@ -29,6 +27,7 @@ Make sure KDE Plasma has at least **3 Virtual Desktops** configured (or run `./s
   - `bash`, `pgrep` / `pkill` (`procps-ng`)
   - `qdbus6` (`qt6-tools`) for KWin Scripting and Virtual Desktop management
   - `notify-send` (`libnotify`, optional for desktop notifications)
+  - `python3` with PyGObject (`python-gobject`, optional for listing open KWin windows via `setup-workspace windows`; otherwise falls back to click-to-pick)
   - `flatpak` (optional, for Flatpak apps)
 
 ## Installation & Terminal Setup
@@ -45,7 +44,7 @@ chmod +x setup-workspace start-workspace stop-workspace
 Or run the one-step setup commands directly:
 
 ```bash
-./setup-workspace init       # Create ~/.config/start-workspace/workspace.conf
+./setup-workspace init       # Auto-detect installed apps -> ~/.config/start-workspace/workspace.conf
 ./setup-workspace install    # Symlink scripts into ~/.local/bin
 ./setup-workspace doctor     # Check tools, KWin, Virtual Desktops, and app paths
 ```
@@ -59,20 +58,24 @@ Run `./setup-workspace` with no arguments to open the interactive terminal menu,
 | Command | Description |
 | :--- | :--- |
 | `setup-workspace` | Open interactive setup menu |
-| `setup-workspace init [--force]` | Create default `workspace.conf` |
+| `setup-workspace init [--preset auto\|minimal\|personal] [--force]` | Create `workspace.conf` (default preset: `auto`) |
 | `setup-workspace list` | List all configured apps per desktop |
 | `setup-workspace add [OPTIONS]` | Add an app (interactive or via flags) |
+| `setup-workspace edit [INDEX] [OPTIONS]` | Edit an existing app entry |
 | `setup-workspace remove [INDEX]` | Remove an app entry by number |
+| `setup-workspace windows [--pick]` | Inspect open KWin windows (`resourceClass` / `resourceName`) |
+| `setup-workspace autostart [status\|enable\|disable]` | Enable or disable KDE login autostart |
 | `setup-workspace install` | Symlink scripts into `~/.local/bin` |
 | `setup-workspace uninstall` | Remove symlinks from `~/.local/bin` |
 | `setup-workspace doctor` | Verify dependencies, KWin D-Bus, and paths |
 | `setup-workspace ensure-desktops` | Create KDE Virtual Desktops to match config |
-| `setup-workspace reset [--yes]` | Reset `workspace.conf` back to defaults |
+| `setup-workspace reset [--preset ...] [--yes]` | Reset `workspace.conf` using a preset |
 
-Example adding an app via CLI:
+Example: discover a window's KWin `resourceClass` and add it via CLI:
 
 ```bash
-setup-workspace add --desktop 2 --name "Firefox" --pattern firefox --classes firefox --cmd firefox
+setup-workspace windows
+setup-workspace add --desktop 2 --name "Firefox" --pattern firefox --classes firefox,org.mozilla.firefox --cmd firefox
 ```
 
 ### Start Workspace
@@ -91,20 +94,20 @@ Available options:
 
 | Option | Description |
 | :--- | :--- |
-| `-a`, `--all` | Also close `keep_open` apps (such as Ptyxis terminal) |
+| `-a`, `--all` | Also close `keep_open` apps (such as your terminal) |
 | `-f`, `--force` | Force-kill unresponsive processes (`pkill -9 -f`) |
 | `-h`, `--help` | Show help message |
 
 Examples:
 
 ```bash
-# Close workspace apps while keeping Ptyxis open
+# Close workspace apps while keeping your terminal open
 stop-workspace
 
-# Close all workspace apps including Ptyxis
+# Close all workspace apps including your terminal
 stop-workspace --all
 
-# Force-kill all workspace processes including Ptyxis
+# Force-kill all workspace processes including your terminal
 stop-workspace -a -f
 ```
 
@@ -123,4 +126,8 @@ DESKTOP|NAME|PROC_PATTERN|WINDOW_CLASSES|FLAGS|COMMAND
 - **`FLAGS`**: Optional comma-separated flags (`keep_open`, `flatpak`, `check_cmd`, `check_arg1`, `close_only`).
 - **`COMMAND`**: Command used to launch the app.
 
-If `~/.config/start-workspace/workspace.conf` does not exist, `start-workspace` and `stop-workspace` fall back to their built-in defaults.
+If `~/.config/start-workspace/workspace.conf` does not exist, `start-workspace` and `stop-workspace` fall back to built-in defaults (only launching tools present on your system).
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).

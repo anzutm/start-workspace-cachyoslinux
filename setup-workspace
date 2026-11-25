@@ -11,6 +11,8 @@ SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/start-workspace"
 CONFIG_FILE="$CONFIG_DIR/workspace.conf"
 BIN_DIR="${HOME}/.local/bin"
+AUTOSTART_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"
+AUTOSTART_FILE="$AUTOSTART_DIR/start-workspace.desktop"
 
 MANAGED_SCRIPTS=("start-workspace" "stop-workspace" "setup-workspace")
 
@@ -40,19 +42,25 @@ Configure and manage start-workspace / stop-workspace from the terminal.
 Run without arguments to open the interactive terminal menu.
 
 Commands:
-  init [--force]         Create default workspace.conf (~/.config/start-workspace/workspace.conf)
+  init [--preset MODE] [--force]
+                         Create workspace.conf (~/.config/start-workspace/workspace.conf)
+                         Presets: auto (default, detects installed apps), minimal, personal
   list                   List all configured workspace applications
   add [OPTIONS]          Add a new application entry (prompts for missing fields)
+  edit [INDEX] [OPTIONS] Edit an existing entry by its list number
   remove [INDEX]         Remove an application entry by its list number
+  windows [--pick]       List open KWin windows with resourceClass/resourceName (--pick to click)
   install                Symlink scripts into ~/.local/bin and check $PATH
   uninstall              Remove script symlinks from ~/.local/bin
+  autostart [STATE]      Manage login autostart: status (default), enable, disable
   doctor                 Check dependencies, KWin D-Bus, Virtual Desktops, and app paths
   ensure-desktops        Create KDE Virtual Desktops to match the highest configured desktop
-  reset [--yes]          Reset workspace.conf back to defaults
+  reset [--preset MODE] [--yes]
+                         Reset workspace.conf using a preset (default: auto)
   path                   Print the configuration file path
   -h, --help             Show this help message
 
-Options for 'add':
+Options for 'add' / 'edit':
   --desktop N            Virtual Desktop number (1, 2, 3, ... or 0 for close-only)
   --name NAME            Display name (e.g. "VS Code")
   --pattern PATTERN      Process pattern for pgrep/pkill (e.g. "code")
@@ -64,24 +72,9 @@ Options for 'add':
 EOF
 }
 
-detect_file_manager() {
-    if command -v nautilus >/dev/null 2>&1; then
-        echo "nautilus|Files (Nautilus)|nautilus|org.gnome.Nautilus,nautilus"
-    elif command -v dolphin >/dev/null 2>&1; then
-        echo "dolphin|Files (Dolphin)|dolphin|org.kde.dolphin,dolphin"
-    else
-        echo "nautilus|Files|nautilus|org.gnome.Nautilus,nautilus,org.kde.dolphin,dolphin"
-    fi
-}
-
-write_default_config() {
+write_config_header() {
     mkdir -p "$CONFIG_DIR"
-
-    local fm_entry fm_cmd fm_name fm_pattern fm_classes
-    fm_entry="$(detect_file_manager)"
-    IFS='|' read -r fm_cmd fm_name fm_pattern fm_classes <<< "$fm_entry"
-
-    cat > "$CONFIG_FILE" << EOF
+    cat > "$CONFIG_FILE" << 'EOF'
 # Workspace Manager Configuration
 # Format: DESKTOP|NAME|PROC_PATTERN|WINDOW_CLASSES|FLAGS|COMMAND
 #   DESKTOP        : 1-based Virtual Desktop number (0 = close-only for stop-workspace)
@@ -90,12 +83,62 @@ write_default_config() {
 #   WINDOW_CLASSES : Comma-separated KWin resourceClass / resourceName values
 #   FLAGS          : Comma-separated flags: keep_open, flatpak, check_cmd, check_arg1, close_only
 #   COMMAND        : Shell command to launch the application
+EOF
+}
+
+detect_terminal_entry() {
+    if command -v ptyxis >/dev/null 2>&1; then
+        echo "1|Ptyxis Terminal|ptyxis|org.gnome.Ptyxis,ptyxis|keep_open|ptyxis"
+    elif command -v konsole >/dev/null 2>&1; then
+        echo "1|Konsole|konsole|org.kde.konsole,konsole|keep_open|konsole"
+    elif command -v kitty >/dev/null 2>&1; then
+        echo "1|Kitty Terminal|kitty|kitty|keep_open|kitty"
+    elif command -v alacritty >/dev/null 2>&1; then
+        echo "1|Alacritty|alacritty|Alacritty,alacritty|keep_open|alacritty"
+    elif command -v ghostty >/dev/null 2>&1; then
+        echo "1|Ghostty|ghostty|com.mitchellh.ghostty,ghostty|keep_open|ghostty"
+    elif command -v gnome-terminal >/dev/null 2>&1; then
+        echo "1|GNOME Terminal|gnome-terminal|org.gnome.Terminal,gnome-terminal-server|keep_open|gnome-terminal"
+    fi
+}
+
+detect_file_manager_entry() {
+    if command -v nautilus >/dev/null 2>&1; then
+        echo "1|Files (Nautilus)|nautilus|org.gnome.Nautilus,nautilus||nautilus"
+    elif command -v dolphin >/dev/null 2>&1; then
+        echo "1|Files (Dolphin)|dolphin|org.kde.dolphin,dolphin||dolphin"
+    elif command -v thunar >/dev/null 2>&1; then
+        echo "1|Files (Thunar)|thunar|Thunar,thunar||thunar"
+    fi
+}
+
+detect_browser_entry() {
+    if command -v chromium >/dev/null 2>&1; then
+        echo "2|Chromium Browser|chromium|chromium,Chromium,chromium-browser||chromium"
+    elif command -v firefox >/dev/null 2>&1; then
+        echo "2|Firefox|firefox|firefox,org.mozilla.firefox||firefox"
+    elif command -v brave >/dev/null 2>&1; then
+        echo "2|Brave Browser|brave|brave-browser||brave"
+    elif command -v google-chrome >/dev/null 2>&1; then
+        echo "2|Google Chrome|chrome|google-chrome||google-chrome"
+    elif command -v zen-browser >/dev/null 2>&1; then
+        echo "2|Zen Browser|zen-browser|zen,zen-alpha||zen-browser"
+    fi
+}
+
+write_personal_config() {
+    write_config_header
+    local fm_entry
+    fm_entry="$(detect_file_manager_entry)"
+    [ -z "$fm_entry" ] && fm_entry="1|Files|nautilus|org.gnome.Nautilus,nautilus,org.kde.dolphin,dolphin||nautilus"
+
+    cat >> "$CONFIG_FILE" << EOF
 
 # --- Desktop 1 (Coding & Notes) ---
 1|Antigravity IDE|antigravity-ide|antigravity-ide||antigravity-ide "/home/anzu/Documents/Coding Project/glass-dock-widget"
 1|Ptyxis Terminal|ptyxis|org.gnome.Ptyxis,ptyxis|keep_open|ptyxis
 1|GNOME Text Editor|gnome-text-editor|org.gnome.TextEditor|check_arg1|gnome-text-editor "/home/anzu/Documents/Cachyos Gnome Command.md"
-1|${fm_name}|${fm_pattern}|${fm_classes}||${fm_cmd}
+${fm_entry}
 
 # --- Desktop 2 (Entertainment & Web) ---
 2|Chromium Browser|chromium|chromium,Chromium,chromium-browser||chromium
@@ -113,20 +156,124 @@ write_default_config() {
 EOF
 }
 
+write_minimal_config() {
+    write_config_header
+    local term_entry fm_entry browser_entry
+    term_entry="$(detect_terminal_entry)"
+    fm_entry="$(detect_file_manager_entry)"
+    browser_entry="$(detect_browser_entry)"
+
+    {
+        echo ""
+        echo "# --- Desktop 1 (Work) ---"
+        [ -n "$term_entry" ] && echo "$term_entry"
+        [ -n "$fm_entry" ] && echo "$fm_entry"
+        echo ""
+        echo "# --- Desktop 2 (Web) ---"
+        [ -n "$browser_entry" ] && echo "$browser_entry"
+    } >> "$CONFIG_FILE"
+}
+
+write_auto_config() {
+    write_config_header
+    local term_entry fm_entry browser_entry
+    term_entry="$(detect_terminal_entry)"
+    fm_entry="$(detect_file_manager_entry)"
+    browser_entry="$(detect_browser_entry)"
+
+    {
+        echo ""
+        echo "# --- Desktop 1 (Coding & Notes) ---"
+        if command -v antigravity-ide >/dev/null 2>&1; then
+            if [ -d "/home/anzu/Documents/Coding Project/glass-dock-widget" ]; then
+                echo '1|Antigravity IDE|antigravity-ide|antigravity-ide||antigravity-ide "/home/anzu/Documents/Coding Project/glass-dock-widget"'
+            else
+                echo "1|Antigravity IDE|antigravity-ide|antigravity-ide||antigravity-ide"
+            fi
+        elif command -v code >/dev/null 2>&1; then
+            echo "1|VS Code|code|code,Code||code"
+        elif command -v codium >/dev/null 2>&1; then
+            echo "1|VSCodium|codium|codium,VSCodium||codium"
+        elif command -v zeditor >/dev/null 2>&1; then
+            echo "1|Zed|zeditor|dev.zed.Zed,zeditor||zeditor"
+        fi
+
+        [ -n "$term_entry" ] && echo "$term_entry"
+
+        if command -v gnome-text-editor >/dev/null 2>&1; then
+            if [ -f "/home/anzu/Documents/Cachyos Gnome Command.md" ]; then
+                echo '1|GNOME Text Editor|gnome-text-editor|org.gnome.TextEditor|check_arg1|gnome-text-editor "/home/anzu/Documents/Cachyos Gnome Command.md"'
+            else
+                echo "1|GNOME Text Editor|gnome-text-editor|org.gnome.TextEditor||gnome-text-editor"
+            fi
+        elif command -v kate >/dev/null 2>&1; then
+            echo "1|Kate|kate|org.kde.kate,kate||kate"
+        fi
+
+        [ -n "$fm_entry" ] && echo "$fm_entry"
+
+        echo ""
+        echo "# --- Desktop 2 (Entertainment & Web) ---"
+        [ -n "$browser_entry" ] && echo "$browser_entry"
+
+        if [ -x "/home/anzu/Documents/Coding Project/anibase-local/releases/AniBase v1.5.5/AniBase" ]; then
+            echo '2|AniBase|AniBase|anibase,AniBase|check_cmd|"/home/anzu/Documents/Coding Project/anibase-local/releases/AniBase v1.5.5/AniBase"'
+            echo "0|AniBase Server/Tray|anibase|anibase|close_only|"
+        fi
+
+        echo ""
+        echo "# --- Desktop 3 (System, Utilities & Gaming) ---"
+        if command -v flatpak >/dev/null 2>&1 && flatpak info app.twintaillauncher.ttl >/dev/null 2>&1; then
+            echo "3|Twintail Launcher|twintaillauncher|Twintaillauncher,twintaillauncher,app.twintaillauncher.ttl|flatpak|flatpak run app.twintaillauncher.ttl"
+            echo "0|Wuthering Waves|client-win64-shipping.exe|client-win64-shipping.exe|close_only|"
+        elif command -v steam >/dev/null 2>&1; then
+            echo "3|Steam|steam|steam||steam"
+        elif command -v lutris >/dev/null 2>&1; then
+            echo "3|Lutris|lutris|net.lutris.Lutris,lutris||lutris"
+        fi
+
+        if command -v omen-gui >/dev/null 2>&1; then
+            echo "3|Omen Space|omen-gui|org.hp.OmenSpace,omen-gui||omen-gui"
+        fi
+
+        if command -v resources >/dev/null 2>&1; then
+            echo "3|Resources Monitor|resources|net.nokyan.Resources,org.gnome.Resources,resources||resources"
+        elif command -v plasma-systemmonitor >/dev/null 2>&1; then
+            echo "3|System Monitor|plasma-systemmonitor|org.kde.plasma-systemmonitor||plasma-systemmonitor"
+        fi
+    } >> "$CONFIG_FILE"
+}
+
+write_config_by_preset() {
+    local preset="${1:-auto}"
+    case "$preset" in
+        auto)     write_auto_config ;;
+        personal) write_personal_config ;;
+        minimal)  write_minimal_config ;;
+        *)
+            err "Unknown preset: $preset (valid: auto, minimal, personal)"
+            return 1
+            ;;
+    esac
+}
+
 ensure_config_exists() {
     if [ ! -f "$CONFIG_FILE" ]; then
-        info "Configuration file not found. Creating default configuration..."
-        write_default_config
+        info "Configuration file not found. Creating configuration (preset: auto)..."
+        write_auto_config
         success "Created: $CONFIG_FILE"
     fi
 }
 
 cmd_init() {
     local force=false
-    for arg in "$@"; do
-        case "$arg" in
-            -f|--force) force=true ;;
-            *) err "Unknown option for init: $arg"; return 1 ;;
+    local preset="auto"
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            -f|--force) force=true; shift ;;
+            --preset)   preset="${2:-}"; shift 2 ;;
+            *) err "Unknown option for init: $1"; return 1 ;;
         esac
     done
 
@@ -136,8 +283,8 @@ cmd_init() {
         return 0
     fi
 
-    write_default_config
-    success "Initialized configuration at: $CONFIG_FILE"
+    write_config_by_preset "$preset" || return 1
+    success "Initialized configuration ($preset) at: $CONFIG_FILE"
 }
 
 load_config_lines() {
@@ -264,7 +411,7 @@ cmd_add() {
 
     if [ -z "$classes" ]; then
         prompted=true
-        read -r -p "KWin window resourceClass/resourceName (comma-separated) [${pattern}]: " classes
+        read -r -p "KWin window resourceClass/resourceName (comma-separated, tip: run 'setup-workspace windows') [${pattern}]: " classes
         classes="${classes:-$pattern}"
     fi
 
@@ -293,6 +440,117 @@ cmd_add() {
 
     printf "%s|%s|%s|%s|%s|%s\n" "$desktop" "$name" "$pattern" "$classes" "$flags_joined" "$cmd" >> "$CONFIG_FILE"
     success "Added '$name' (Desktop $desktop) to $CONFIG_FILE"
+}
+
+cmd_edit() {
+    ensure_config_exists
+    load_config_lines
+
+    if [ "${#CONFIG_LINES[@]}" -eq 0 ]; then
+        warn "Configuration is empty."
+        return 0
+    fi
+
+    local target_idx=""
+    local new_desktop="" new_name="" new_pattern="" new_classes="" new_cmd=""
+    local set_flags=false
+    local flag_list=()
+
+    if [ "$#" -gt 0 ] && [[ "$1" =~ ^[0-9]+$ ]]; then
+        target_idx="$1"
+        shift
+    fi
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --desktop)    new_desktop="${2:-}"; shift 2 ;;
+            --name)       new_name="${2:-}"; shift 2 ;;
+            --pattern)    new_pattern="${2:-}"; shift 2 ;;
+            --classes)    new_classes="${2:-}"; shift 2 ;;
+            --cmd)        new_cmd="${2:-}"; shift 2 ;;
+            --keep-open)  set_flags=true; flag_list+=("keep_open"); shift ;;
+            --flatpak)    set_flags=true; flag_list+=("flatpak"); shift ;;
+            --close-only) set_flags=true; flag_list+=("close_only"); shift ;;
+            *) err "Unknown option for edit: $1"; return 1 ;;
+        esac
+    done
+
+    if [ -z "$target_idx" ]; then
+        cmd_list
+        read -r -p "Enter entry # to edit (or blank to cancel): " target_idx
+        [ -z "$target_idx" ] && { info "Cancelled."; return 0; }
+    fi
+
+    if ! [[ "$target_idx" =~ ^[0-9]+$ ]] || [ "$target_idx" -lt 1 ] || [ "$target_idx" -gt "${#CONFIG_LINES[@]}" ]; then
+        err "Invalid entry number: $target_idx (valid: 1-${#CONFIG_LINES[@]})."
+        return 1
+    fi
+
+    local cur_line="${CONFIG_LINES[$((target_idx - 1))]}"
+    local cur_desktop cur_name cur_pattern cur_classes cur_flags cur_cmd
+    IFS='|' read -r cur_desktop cur_name cur_pattern cur_classes cur_flags cur_cmd <<< "$cur_line"
+
+    local interactive=false
+    if [ -z "$new_desktop$new_name$new_pattern$new_classes$new_cmd" ] && [ "$set_flags" = false ]; then
+        interactive=true
+        info "Editing entry #$target_idx ($cur_name). Press Enter to keep current value."
+        read -r -p "Virtual Desktop [${cur_desktop}]: " new_desktop
+        read -r -p "Display Name [${cur_name}]: " new_name
+        read -r -p "Process Pattern [${cur_pattern}]: " new_pattern
+        read -r -p "KWin Window Classes [${cur_classes}]: " new_classes
+        read -r -p "Launch Command [${cur_cmd}]: " new_cmd
+        local ans_flags
+        read -r -p "Flags [${cur_flags}] (keep_open,flatpak,check_cmd,check_arg1,close_only or '-' to clear): " ans_flags
+        if [ "$ans_flags" = "-" ]; then
+            cur_flags=""
+        elif [ -n "$ans_flags" ]; then
+            cur_flags="$ans_flags"
+        fi
+    fi
+
+    local final_desktop="${new_desktop:-$cur_desktop}"
+    local final_name="${new_name:-$cur_name}"
+    local final_pattern="${new_pattern:-$cur_pattern}"
+    local final_classes="${new_classes:-$cur_classes}"
+    local final_cmd="${new_cmd:-$cur_cmd}"
+    local final_flags="$cur_flags"
+
+    if [ "$interactive" = false ] && [ "$set_flags" = true ]; then
+        local IFS=','
+        final_flags="${flag_list[*]}"
+    fi
+
+    if ! [[ "$final_desktop" =~ ^[0-9]+$ ]]; then
+        err "Desktop must be a non-negative integer (got: '$final_desktop')."
+        return 1
+    fi
+
+    validate_no_pipe "$final_name" "name" || return 1
+    validate_no_pipe "$final_pattern" "pattern" || return 1
+    validate_no_pipe "$final_classes" "classes" || return 1
+    validate_no_pipe "$final_flags" "flags" || return 1
+    validate_no_pipe "$final_cmd" "cmd" || return 1
+
+    local updated_line="${final_desktop}|${final_name}|${final_pattern}|${final_classes}|${final_flags}|${final_cmd}"
+
+    local tmp_file
+    tmp_file="$(mktemp)"
+    local active_idx=0
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]]; then
+            printf "%s\n" "$line" >> "$tmp_file"
+            continue
+        fi
+        active_idx=$((active_idx + 1))
+        if [ "$active_idx" -eq "$target_idx" ]; then
+            printf "%s\n" "$updated_line" >> "$tmp_file"
+        else
+            printf "%s\n" "$line" >> "$tmp_file"
+        fi
+    done < "$CONFIG_FILE"
+
+    mv "$tmp_file" "$CONFIG_FILE"
+    success "Updated entry #$target_idx ($final_name)."
 }
 
 cmd_remove() {
@@ -338,6 +596,108 @@ cmd_remove() {
     success "Removed entry #$target_idx ($removed_name)."
 }
 
+cmd_windows() {
+    if ! command -v qdbus6 >/dev/null 2>&1; then
+        err "qdbus6 is not installed; cannot inspect KWin windows."
+        return 1
+    fi
+
+    local pick=false
+    for arg in "$@"; do
+        case "$arg" in
+            --pick|-p) pick=true ;;
+            *) err "Unknown option for windows: $arg"; return 1 ;;
+        esac
+    done
+
+    if [ "$pick" = true ]; then
+        info "Click any open window to inspect its KWin resourceClass & resourceName..."
+        qdbus6 org.kde.KWin /KWin org.kde.KWin.queryWindowInfo
+        return $?
+    fi
+
+    if command -v python3 >/dev/null 2>&1 && python3 -c "import gi" >/dev/null 2>&1; then
+        python3 - << 'PYEOF'
+import os, subprocess, tempfile, gi
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+rows = []
+xml = """<node><interface name="org.startworkspace.WinProbe">
+  <method name="Report">
+    <arg type="s" name="cls" direction="in"/>
+    <arg type="s" name="name" direction="in"/>
+    <arg type="s" name="desktops" direction="in"/>
+    <arg type="s" name="caption" direction="in"/>
+  </method>
+  <method name="Done"/>
+</interface></node>"""
+
+loop = GLib.MainLoop()
+node = Gio.DBusNodeInfo.new_for_xml(xml)
+tmp_path = None
+script_name = f"winprobe_{os.getpid()}"
+
+def on_call(conn, sender, path, iface, method, params, inv):
+    if method == "Report":
+        rows.append(params.unpack())
+        inv.return_value(None)
+    elif method == "Done":
+        inv.return_value(None)
+        loop.quit()
+
+def on_acquired(conn, name):
+    global tmp_path
+    conn.register_object("/Probe", node.interfaces[0], on_call, None, None)
+    js = f"""
+var clients = workspace.windowList();
+for (var i = 0; i < clients.length; i++) {{
+    var c = clients[i];
+    if (!c.normalWindow) continue;
+    var dList = [];
+    for (var j = 0; j < c.desktops.length; j++) {{
+        dList.push(workspace.desktops.indexOf(c.desktops[j]) + 1);
+    }}
+    callDBus("org.startworkspace.WinProbe", "/Probe", "org.startworkspace.WinProbe", "Report",
+        String(c.resourceClass || ""), String(c.resourceName || ""),
+        dList.length ? dList.join(",") : "all", String(c.caption || ""));
+}}
+callDBus("org.startworkspace.WinProbe", "/Probe", "org.startworkspace.WinProbe", "Done");
+"""
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:
+        f.write(js)
+        tmp_path = f.name
+    subprocess.run(["qdbus6", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.loadScript", tmp_path, script_name],
+                   check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(["qdbus6", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.start"],
+                   check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    GLib.timeout_add(1500, loop.quit)
+
+try:
+    Gio.bus_own_name(Gio.BusType.SESSION, "org.startworkspace.WinProbe", Gio.BusNameOwnerFlags.NONE, on_acquired, None, None)
+    loop.run()
+finally:
+    subprocess.run(["qdbus6", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.unloadScript", script_name],
+                   check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if tmp_path and os.path.exists(tmp_path):
+        os.unlink(tmp_path)
+
+if not rows:
+    print("No open normal windows detected (or KWin Scripting D-Bus is unavailable).")
+else:
+    print(f"\n{'Desktop':<8} {'resourceClass':<28} {'resourceName':<24} {'Window Title'}")
+    print("-" * 100)
+    for cls, name, desks, caption in rows:
+        print(f"{desks:<8} {cls[:28]:<28} {(name or '-')[:24]:<24} {caption[:45]}")
+    print()
+PYEOF
+    else
+        warn "python3 with PyGObject (gi) not found; falling back to click-to-inspect mode."
+        info "Click any open window to inspect its KWin resourceClass & resourceName..."
+        qdbus6 org.kde.KWin /KWin org.kde.KWin.queryWindowInfo
+    fi
+}
+
 cmd_install() {
     mkdir -p "$BIN_DIR"
     for s in "${MANAGED_SCRIPTS[@]}"; do
@@ -377,6 +737,48 @@ cmd_uninstall() {
     if [ "$removed" -eq 0 ]; then
         info "No installed symlinks found in $BIN_DIR."
     fi
+}
+
+cmd_autostart() {
+    local action="${1:-status}"
+    local exec_path="$SCRIPT_DIR/start-workspace"
+    [ -x "$BIN_DIR/start-workspace" ] && exec_path="$BIN_DIR/start-workspace"
+
+    case "$action" in
+        status)
+            if [ -f "$AUTOSTART_FILE" ]; then
+                success "Autostart is ENABLED ($AUTOSTART_FILE)"
+            else
+                info "Autostart is DISABLED ($AUTOSTART_FILE not present)"
+            fi
+            ;;
+        enable)
+            mkdir -p "$AUTOSTART_DIR"
+            cat > "$AUTOSTART_FILE" << EOF
+[Desktop Entry]
+Type=Application
+Name=Start Workspace
+Comment=Launch configured workspace applications across Virtual Desktops
+Exec=$exec_path
+Icon=preferences-desktop-display
+Terminal=false
+X-KDE-autostart-phase=2
+EOF
+            success "Enabled login autostart at: $AUTOSTART_FILE"
+            ;;
+        disable)
+            if [ -f "$AUTOSTART_FILE" ]; then
+                rm -f "$AUTOSTART_FILE"
+                success "Disabled login autostart (removed $AUTOSTART_FILE)"
+            else
+                info "Autostart was already disabled."
+            fi
+            ;;
+        *)
+            err "Unknown autostart action: $action (use: status, enable, disable)"
+            return 1
+            ;;
+    esac
 }
 
 get_max_configured_desktop() {
@@ -463,7 +865,7 @@ cmd_doctor() {
         fi
     fi
 
-    # 3. CLI installation & PATH
+    # 3. CLI installation & PATH & Autostart
     local all_linked=true
     for s in "${MANAGED_SCRIPTS[@]}"; do
         if [ ! -x "$BIN_DIR/$s" ]; then
@@ -481,6 +883,12 @@ cmd_doctor() {
         *":$BIN_DIR:"*) success "$BIN_DIR is in \$PATH" ;;
         *) warn "$BIN_DIR is not in \$PATH" ;;
     esac
+
+    if [ -f "$AUTOSTART_FILE" ]; then
+        success "Login autostart enabled ($AUTOSTART_FILE)"
+    else
+        info "Login autostart disabled (optional: 'setup-workspace autostart enable')"
+    fi
 
     # 4. Config & configured app binaries
     if [ ! -f "$CONFIG_FILE" ]; then
@@ -523,43 +931,49 @@ cmd_doctor() {
 
 cmd_reset() {
     local auto_yes=false
-    for arg in "$@"; do
-        case "$arg" in
-            -y|--yes) auto_yes=true ;;
-            *) err "Unknown option for reset: $arg"; return 1 ;;
+    local preset="auto"
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            -y|--yes) auto_yes=true; shift ;;
+            --preset) preset="${2:-}"; shift 2 ;;
+            *) err "Unknown option for reset: $1"; return 1 ;;
         esac
     done
 
     if [ "$auto_yes" = false ]; then
         local ans
-        read -r -p "Overwrite $CONFIG_FILE with defaults? [y/N]: " ans
+        read -r -p "Overwrite $CONFIG_FILE with '$preset' preset? [y/N]: " ans
         if [[ ! "$ans" =~ ^[Yy]$ ]]; then
             info "Cancelled."
             return 0
         fi
     fi
 
-    write_default_config
-    success "Reset configuration to defaults at: $CONFIG_FILE"
+    write_config_by_preset "$preset" || return 1
+    success "Reset configuration ($preset) at: $CONFIG_FILE"
 }
 
 interactive_menu() {
     while true; do
         printf "\n${BOLD}=== Workspace Setup (Terminal Menu) ===${RESET}\n"
         printf "Config: ${DIM}%s${RESET}\n\n" "$CONFIG_FILE"
-        echo "  1) Quick setup (init config + install to ~/.local/bin + check system)"
+        echo "  1) Quick setup (auto-detect apps + install to ~/.local/bin + check system)"
         echo "  2) List configured workspace apps"
         echo "  3) Add a new app to workspace"
-        echo "  4) Remove an app from workspace"
-        echo "  5) Check dependencies & environment (doctor)"
-        echo "  6) Ensure KDE Virtual Desktops match config"
-        echo "  7) Install / Update CLI commands (~/.local/bin)"
-        echo "  8) Uninstall CLI commands (~/.local/bin)"
-        echo "  9) Reset configuration to defaults"
-        echo " 10) Run start-workspace now"
+        echo "  4) Edit an existing app"
+        echo "  5) Remove an app from workspace"
+        echo "  6) Inspect open KWin windows (find resourceClass / resourceName)"
+        echo "  7) Check dependencies & environment (doctor)"
+        echo "  8) Ensure KDE Virtual Desktops match config"
+        echo "  9) Toggle login autostart (enable / disable)"
+        echo " 10) Install / Update CLI commands (~/.local/bin)"
+        echo " 11) Uninstall CLI commands (~/.local/bin)"
+        echo " 12) Reset configuration to defaults"
+        echo " 13) Run start-workspace now"
         echo "  0) Exit"
         echo ""
-        read -r -p "Choose an option [0-10]: " choice
+        read -r -p "Choose an option [0-13]: " choice
 
         case "$choice" in
             1)
@@ -569,13 +983,22 @@ interactive_menu() {
                 ;;
             2) cmd_list ;;
             3) cmd_add ;;
-            4) cmd_remove ;;
-            5) cmd_doctor ;;
-            6) cmd_ensure_desktops ;;
-            7) cmd_install ;;
-            8) cmd_uninstall ;;
-            9) cmd_reset ;;
-            10) "$SCRIPT_DIR/start-workspace" ;;
+            4) cmd_edit ;;
+            5) cmd_remove ;;
+            6) cmd_windows ;;
+            7) cmd_doctor ;;
+            8) cmd_ensure_desktops ;;
+            9)
+                if [ -f "$AUTOSTART_FILE" ]; then
+                    cmd_autostart disable
+                else
+                    cmd_autostart enable
+                fi
+                ;;
+            10) cmd_install ;;
+            11) cmd_uninstall ;;
+            12) cmd_reset ;;
+            13) "$SCRIPT_DIR/start-workspace" ;;
             0|q|Q)
                 info "Bye!"
                 return 0
@@ -600,9 +1023,12 @@ case "$subcmd" in
     init)            cmd_init "$@" ;;
     list)            cmd_list "$@" ;;
     add)             cmd_add "$@" ;;
+    edit)            cmd_edit "$@" ;;
     remove|rm)       cmd_remove "$@" ;;
+    windows|win)     cmd_windows "$@" ;;
     install)         cmd_install "$@" ;;
     uninstall)       cmd_uninstall "$@" ;;
+    autostart)       cmd_autostart "$@" ;;
     doctor|check)    cmd_doctor "$@" ;;
     ensure-desktops) cmd_ensure_desktops "$@" ;;
     reset)           cmd_reset "$@" ;;
