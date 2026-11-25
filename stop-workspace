@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+# ========================================================
+# Auto-Stop Workspace Setup for CachyOS / KDE Plasma
+# ========================================================
+
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
+
+CLOSE_TERMINAL=false
+FORCE=false
+
+for arg in "$@"; do
+    case "$arg" in
+        -a|--all)
+            CLOSE_TERMINAL=true
+            ;;
+        -f|--force)
+            FORCE=true
+            ;;
+        -h|--help)
+            echo "Penggunaan: stop-workspace [OPSI]"
+            echo "Menutup semua aplikasi workspace (Desktop 1 - 3)."
+            echo ""
+            echo "Opsi:"
+            echo "  -a, --all    Tutup juga jendela terminal Ptyxis"
+            echo "  -f, --force  Paksa tutup proses jika tidak merespons (kill -9)"
+            echo "  -h, --help   Tampilkan pesan bantuan ini"
+            exit 0
+            ;;
+    esac
+done
+
+echo "[*] Menghentikan Workspace..."
+
+# 1. Gracefully close windows via KWin Scripting (Wayland Native)
+if command -v qdbus6 >/dev/null 2>&1; then
+    tmp_script="/tmp/kwin_stop_$$.js"
+    cat << EOF > "$tmp_script"
+var targets = [
+    "antigravity-ide",
+    "brave-browser",
+    "org.gnome.TextEditor",
+    "anibase",
+    "AniBase",
+    "Twintaillauncher",
+    "twintaillauncher",
+    "client-win64-shipping.exe",
+    "org.gnome.Resources",
+    "resources",
+    "org.hp.OmenSpace",
+    "omen-gui"
+];
+
+var closeTerminal = ${CLOSE_TERMINAL};
+if (closeTerminal) {
+    targets.push("org.gnome.Ptyxis");
+    targets.push("ptyxis");
+}
+
+var clients = workspace.windowList();
+for (var i = 0; i < clients.length; i++) {
+    var c = clients[i];
+    if (!c.normalWindow) continue;
+    var match = false;
+    for (var j = 0; j < targets.length; j++) {
+        if (c.resourceClass === targets[j] || c.resourceName === targets[j]) {
+            match = true;
+            break;
+        }
+    }
+    if (match) {
+        c.closeWindow();
+    }
+}
+EOF
+
+    script_id=$(qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript "$tmp_script" "stop_ws_$$" 2>/dev/null)
+    qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.start >/dev/null 2>&1
+    sleep 0.4
+    qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript "stop_ws_$$" >/dev/null 2>&1
+    rm -f "$tmp_script"
+fi
+
+# Tunggu sejenak agar jendela menutup secara normal
+sleep 0.8
+
+# 2. Pastikan proses background tertutup (SIGTERM / SIGKILL)
+close_proc() {
+    local pattern="$1"
+    local name="$2"
+
+    if pgrep -f "$pattern" >/dev/null 2>&1; then
+        echo "[-] Menutup proses: $name"
+        if [ "$FORCE" = true ]; then
+            pkill -9 -f "$pattern" >/dev/null 2>&1 || true
+        else
+            pkill -f "$pattern" >/dev/null 2>&1 || true
+        fi
+    fi
+}
+
+# Tutup Flatpak jika masih aktif
+if command -v flatpak >/dev/null 2>&1; then
+    flatpak kill app.twintaillauncher.ttl >/dev/null 2>&1 || true
+fi
+
+# Tutup proses-proses aplikasi
+close_proc "antigravity-ide" "Antigravity IDE"
+close_proc "brave" "Brave Browser"
+close_proc "gnome-text-editor" "Gnome Text Editor"
+close_proc "AniBase" "AniBase"
+close_proc "anibase" "AniBase Server/Tray"
+close_proc "twintaillauncher" "Twintail Launcher"
+close_proc "client-win64-shipping.exe" "Wuthering Waves"
+close_proc "resources" "Resources Monitor"
+close_proc "omen-gui" "Omen Space"
+
+if [ "$CLOSE_TERMINAL" = true ]; then
+    close_proc "ptyxis" "Ptyxis Terminal"
+else
+    if pgrep -x ptyxis >/dev/null 2>&1; then
+        echo "[i] Ptyxis Terminal tetap dibuka (gunakan 'stop-workspace --all' untuk menutup terminal juga)."
+    fi
+fi
+
+# 3. Kembalikan fokus tampilan ke Desktop 1
+if command -v qdbus6 >/dev/null 2>&1; then
+    qdbus6 org.kde.KWin /KWin org.kde.KWin.setCurrentDesktop 1 >/dev/null 2>&1 || true
+fi
+
+# 4. Kirim notifikasi desktop
+if command -v notify-send >/dev/null 2>&1; then
+    notify-send -i preferences-desktop-display "Workspace Setup" "Semua aplikasi workspace telah berhasil ditutup!"
+fi
+
+echo "[✓] Selesai! Semua aplikasi workspace telah dihentikan."

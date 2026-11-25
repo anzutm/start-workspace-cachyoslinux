@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# ========================================================
+# Auto-Start Workspace Setup for CachyOS / KDE Plasma
+# ========================================================
+
+# Pastikan environment runtime D-Bus tersedia
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
+
+echo "[*] Membuka Workspace Setup..."
+
+# Terapkan ulang aturan KWin
+if command -v qdbus6 >/dev/null 2>&1; then
+    qdbus6 org.kde.KWin /KWin org.kde.KWin.reconfigure >/dev/null 2>&1 || true
+fi
+
+# Helper function untuk cek apakah proses sudah jalan
+launch_if_not_running() {
+    local proc_pattern="$1"
+    shift
+    local cmd=("$@")
+
+    if pgrep -f "$proc_pattern" >/dev/null 2>&1; then
+        echo "[-] Sudah berjalan: $proc_pattern"
+    else
+        echo "[+] Membuka: ${cmd[0]}"
+        "${cmd[@]}" >/dev/null 2>&1 &
+        sleep 0.8
+    fi
+}
+
+# --- Desktop 1 (Coding & Notes) ---
+# 1. Antigravity IDE (Workspace: glass-dock-widget)
+launch_if_not_running "antigravity-ide" antigravity-ide "/home/anzu/Documents/Coding Project/glass-dock-widget"
+
+# 2. Ptyxis Terminal
+launch_if_not_running "ptyxis" ptyxis
+
+# 3. Gnome Text Editor (Catatan CachyOS)
+if [ -f "/home/anzu/Documents/Cachyos Gnome Command.md" ]; then
+    launch_if_not_running "gnome-text-editor" gnome-text-editor "/home/anzu/Documents/Cachyos Gnome Command.md"
+fi
+
+# 4. Files (File Manager)
+if command -v nautilus >/dev/null 2>&1; then
+    launch_if_not_running "nautilus" nautilus
+elif command -v dolphin >/dev/null 2>&1; then
+    launch_if_not_running "dolphin" dolphin
+fi
+
+# --- Desktop 2 (Entertainment & Web) ---
+# 5. Chromium Browser
+launch_if_not_running "chromium" chromium
+
+# 6. AniBase (Anime Streaming & Library)
+if [ -f "/home/anzu/Documents/Coding Project/anibase-local/releases/AniBase v1.5.5/AniBase" ]; then
+    launch_if_not_running "AniBase" "/home/anzu/Documents/Coding Project/anibase-local/releases/AniBase v1.5.5/AniBase"
+fi
+
+# --- Desktop 3 (System, Utilities & Gaming) ---
+# 7. Twintail Launcher (Flatpak - Wuthering Waves)
+launch_if_not_running "twintaillauncher" flatpak run app.twintaillauncher.ttl
+
+# 8. Omen Space
+launch_if_not_running "omen-gui" omen-gui
+
+# --- KWin Window Organizer (Wayland Native) ---
+# Memastikan semua jendela yang baru dibuka dipindahkan ke Desktop masing-masing
+organize_windows() {
+    if ! command -v qdbus6 >/dev/null 2>&1; then
+        return
+    fi
+
+    local js_code='
+var rules = {
+    // Desktop 1 (Index 0)
+    "antigravity-ide": 0,
+    "org.gnome.Ptyxis": 0,
+    "org.gnome.TextEditor": 0,
+    "org.gnome.Nautilus": 0,
+    "nautilus": 0,
+    "org.kde.dolphin": 0,
+    "dolphin": 0,
+
+    // Desktop 2 (Index 1)
+    "chromium": 1,
+    "Chromium": 1,
+    "chromium-browser": 1,
+    "anibase": 1,
+    "AniBase": 1,
+
+    // Desktop 3 (Index 2)
+    "Twintaillauncher": 2,
+    "twintaillauncher": 2,
+    "app.twintaillauncher.ttl": 2,
+    "client-win64-shipping.exe": 2,
+    "org.hp.OmenSpace": 2,
+    "omen-gui": 2
+};
+
+var clients = workspace.windowList();
+for (var i = 0; i < clients.length; i++) {
+    var c = clients[i];
+    if (!c.normalWindow) continue;
+    var target = rules[c.resourceClass] !== undefined ? rules[c.resourceClass] : rules[c.resourceName];
+    if (target !== undefined && target < workspace.desktops.length) {
+        c.desktops = [workspace.desktops[target]];
+    }
+}
+'
+    local tmp_script="/tmp/kwin_organize_$$.js"
+    echo "$js_code" > "$tmp_script"
+
+    local script_id
+    script_id=$(qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript "$tmp_script" "organize_$$" 2>/dev/null)
+    qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.start >/dev/null 2>&1
+    sleep 0.2
+    qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript "organize_$$" >/dev/null 2>&1
+    rm -f "$tmp_script"
+}
+
+echo "[*] Mengatur penempatan jendela di Desktop 1, 2, dan 3..."
+organize_windows
+
+# Beri jeda sejenak untuk aplikasi yang proses render jendelanya agak lambat (Flatpak / Electron)
+sleep 2
+organize_windows
+
+# Pastikan fokus kembali ke Desktop 1
+if command -v qdbus6 >/dev/null 2>&1; then
+    qdbus6 org.kde.KWin /KWin org.kde.KWin.setCurrentDesktop 1 >/dev/null 2>&1 || true
+fi
+
+# Kirim notifikasi jika notify-send tersedia
+if command -v notify-send >/dev/null 2>&1; then
+    notify-send -i preferences-desktop-display "Workspace Setup" "Semua aplikasi setup kerja & santai telah berhasil dibuka!"
+fi
+
+echo "[✓] Selesai! Semua aplikasi telah ditempatkan pada Desktop 1-3."
