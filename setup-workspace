@@ -1,0 +1,616 @@
+#!/usr/bin/env bash
+# ========================================================
+# Interactive & CLI Setup for Workspace Manager
+# ========================================================
+
+set -u
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/start-workspace"
+CONFIG_FILE="$CONFIG_DIR/workspace.conf"
+BIN_DIR="${HOME}/.local/bin"
+
+MANAGED_SCRIPTS=("start-workspace" "stop-workspace" "setup-workspace")
+
+# Colors (disabled automatically when not a TTY)
+if [ -t 1 ]; then
+    BOLD='\033[1m'
+    DIM='\033[2m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[0;33m'
+    RED='\033[0;31m'
+    CYAN='\033[0;36m'
+    RESET='\033[0m'
+else
+    BOLD='' DIM='' GREEN='' YELLOW='' RED='' CYAN='' RESET=''
+fi
+
+info()    { printf "${CYAN}[*]${RESET} %s\n" "$*"; }
+success() { printf "${GREEN}[✓]${RESET} %s\n" "$*"; }
+warn()    { printf "${YELLOW}[!]${RESET} %s\n" "$*"; }
+err()     { printf "${RED}[✗]${RESET} %s\n" "$*" >&2; }
+
+print_help() {
+    cat << 'EOF'
+Usage: setup-workspace [COMMAND] [OPTIONS]
+
+Configure and manage start-workspace / stop-workspace from the terminal.
+Run without arguments to open the interactive terminal menu.
+
+Commands:
+  init [--force]         Create default workspace.conf (~/.config/start-workspace/workspace.conf)
+  list                   List all configured workspace applications
+  add [OPTIONS]          Add a new application entry (prompts for missing fields)
+  remove [INDEX]         Remove an application entry by its list number
+  install                Symlink scripts into ~/.local/bin and check $PATH
+  uninstall              Remove script symlinks from ~/.local/bin
+  doctor                 Check dependencies, KWin D-Bus, Virtual Desktops, and app paths
+  ensure-desktops        Create KDE Virtual Desktops to match the highest configured desktop
+  reset [--yes]          Reset workspace.conf back to defaults
+  path                   Print the configuration file path
+  -h, --help             Show this help message
+
+Options for 'add':
+  --desktop N            Virtual Desktop number (1, 2, 3, ... or 0 for close-only)
+  --name NAME            Display name (e.g. "VS Code")
+  --pattern PATTERN      Process pattern for pgrep/pkill (e.g. "code")
+  --classes CLASSES      Comma-separated KWin resourceClass/resourceName values
+  --cmd COMMAND          Launch command (quote paths with spaces if needed)
+  --keep-open            Keep running on stop-workspace unless --all is passed
+  --flatpak              Mark as Flatpak app (enables 'flatpak kill' on stop)
+  --close-only           Only stop this app in stop-workspace (do not launch in start-workspace)
+EOF
+}
+
+detect_file_manager() {
+    if command -v nautilus >/dev/null 2>&1; then
+        echo "nautilus|Files (Nautilus)|nautilus|org.gnome.Nautilus,nautilus"
+    elif command -v dolphin >/dev/null 2>&1; then
+        echo "dolphin|Files (Dolphin)|dolphin|org.kde.dolphin,dolphin"
+    else
+        echo "nautilus|Files|nautilus|org.gnome.Nautilus,nautilus,org.kde.dolphin,dolphin"
+    fi
+}
+
+write_default_config() {
+    mkdir -p "$CONFIG_DIR"
+
+    local fm_entry fm_cmd fm_name fm_pattern fm_classes
+    fm_entry="$(detect_file_manager)"
+    IFS='|' read -r fm_cmd fm_name fm_pattern fm_classes <<< "$fm_entry"
+
+    cat > "$CONFIG_FILE" << EOF
+# Workspace Manager Configuration
+# Format: DESKTOP|NAME|PROC_PATTERN|WINDOW_CLASSES|FLAGS|COMMAND
+#   DESKTOP        : 1-based Virtual Desktop number (0 = close-only for stop-workspace)
+#   NAME           : Human-readable application name
+#   PROC_PATTERN   : Pattern used by pgrep -f / pkill -f
+#   WINDOW_CLASSES : Comma-separated KWin resourceClass / resourceName values
+#   FLAGS          : Comma-separated flags: keep_open, flatpak, check_cmd, check_arg1, close_only
+#   COMMAND        : Shell command to launch the application
+
+# --- Desktop 1 (Coding & Notes) ---
+1|Antigravity IDE|antigravity-ide|antigravity-ide||antigravity-ide "/home/anzu/Documents/Coding Project/glass-dock-widget"
+1|Ptyxis Terminal|ptyxis|org.gnome.Ptyxis,ptyxis|keep_open|ptyxis
+1|GNOME Text Editor|gnome-text-editor|org.gnome.TextEditor|check_arg1|gnome-text-editor "/home/anzu/Documents/Cachyos Gnome Command.md"
+1|${fm_name}|${fm_pattern}|${fm_classes}||${fm_cmd}
+
+# --- Desktop 2 (Entertainment & Web) ---
+2|Chromium Browser|chromium|chromium,Chromium,chromium-browser||chromium
+2|AniBase|AniBase|anibase,AniBase|check_cmd|"/home/anzu/Documents/Coding Project/anibase-local/releases/AniBase v1.5.5/AniBase"
+
+# --- Desktop 3 (System, Utilities & Gaming) ---
+3|Twintail Launcher|twintaillauncher|Twintaillauncher,twintaillauncher,app.twintaillauncher.ttl|flatpak|flatpak run app.twintaillauncher.ttl
+3|Omen Space|omen-gui|org.hp.OmenSpace,omen-gui||omen-gui
+
+# --- Close-only Targets (stopped by stop-workspace) ---
+0|Brave Browser|brave|brave-browser|close_only|
+0|AniBase Server/Tray|anibase|anibase|close_only|
+0|Wuthering Waves|client-win64-shipping.exe|client-win64-shipping.exe|close_only|
+0|Resources Monitor|resources|org.gnome.Resources,resources|close_only|
+EOF
+}
+
+ensure_config_exists() {
+    if [ ! -f "$CONFIG_FILE" ]; then
+        info "Configuration file not found. Creating default configuration..."
+        write_default_config
+        success "Created: $CONFIG_FILE"
+    fi
+}
+
+cmd_init() {
+    local force=false
+    for arg in "$@"; do
+        case "$arg" in
+            -f|--force) force=true ;;
+            *) err "Unknown option for init: $arg"; return 1 ;;
+        esac
+    done
+
+    if [ -f "$CONFIG_FILE" ] && [ "$force" = false ]; then
+        warn "Configuration already exists at: $CONFIG_FILE"
+        info "Use 'setup-workspace init --force' or 'setup-workspace reset' to overwrite."
+        return 0
+    fi
+
+    write_default_config
+    success "Initialized configuration at: $CONFIG_FILE"
+}
+
+load_config_lines() {
+    CONFIG_LINES=()
+    [ -f "$CONFIG_FILE" ] || return 0
+    while IFS= read -r line || [ -n "$line" ]; do
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+        CONFIG_LINES+=("$line")
+    done < "$CONFIG_FILE"
+}
+
+cmd_list() {
+    ensure_config_exists
+    load_config_lines
+
+    if [ "${#CONFIG_LINES[@]}" -eq 0 ]; then
+        warn "No entries configured in $CONFIG_FILE"
+        return 0
+    fi
+
+    printf "\n${BOLD}Workspace Configuration${RESET} (${DIM}%s${RESET})\n\n" "$CONFIG_FILE"
+    printf "${BOLD}%-3s  %-7s  %-22s  %-20s  %-18s  %s${RESET}\n" "#" "Desktop" "Name" "Pattern" "Flags" "Command"
+    printf "%s\n" "------------------------------------------------------------------------------------------------------------"
+
+    local idx=1
+    for line in "${CONFIG_LINES[@]}"; do
+        local desktop name proc classes flags cmd
+        IFS='|' read -r desktop name proc classes flags cmd <<< "$line"
+        local desk_label="D${desktop}"
+        [ "$desktop" = "0" ] && desk_label="stop"
+        [ -z "$flags" ] && flags="-"
+        [ -z "$cmd" ] && cmd="-"
+        printf "%-3d  %-7s  %-22s  %-20s  %-18s  %s\n" \
+            "$idx" "$desk_label" "${name:0:22}" "${proc:0:20}" "${flags:0:18}" "$cmd"
+        idx=$((idx + 1))
+    done
+    echo ""
+}
+
+validate_no_pipe() {
+    local val="$1"
+    local field="$2"
+    if [[ "$val" == *"|"* ]]; then
+        err "Field '$field' cannot contain the '|' character."
+        return 1
+    fi
+}
+
+cmd_add() {
+    ensure_config_exists
+
+    local desktop="" name="" pattern="" classes="" cmd=""
+    local flag_list=()
+    local prompted=false
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --desktop)    desktop="${2:-}"; shift 2 ;;
+            --name)       name="${2:-}"; shift 2 ;;
+            --pattern)    pattern="${2:-}"; shift 2 ;;
+            --classes)    classes="${2:-}"; shift 2 ;;
+            --cmd)        cmd="${2:-}"; shift 2 ;;
+            --keep-open)  flag_list+=("keep_open"); shift ;;
+            --flatpak)    flag_list+=("flatpak"); shift ;;
+            --close-only) flag_list+=("close_only"); shift ;;
+            *) err "Unknown option for add: $1"; return 1 ;;
+        esac
+    done
+
+    local is_close_only=false
+    for f in "${flag_list[@]}"; do
+        [ "$f" = "close_only" ] && is_close_only=true
+    done
+
+    if [ -z "$desktop" ]; then
+        if [ "$is_close_only" = true ]; then
+            desktop="0"
+        else
+            prompted=true
+            read -r -p "Virtual Desktop number (1, 2, 3, ... or 0 for close-only) [1]: " desktop
+            desktop="${desktop:-1}"
+        fi
+    fi
+
+    if ! [[ "$desktop" =~ ^[0-9]+$ ]]; then
+        err "Desktop must be a non-negative integer (got: '$desktop')."
+        return 1
+    fi
+    [ "$desktop" = "0" ] && is_close_only=true
+
+    if [ -z "$name" ]; then
+        prompted=true
+        read -r -p "Application display name (e.g. VS Code): " name
+    fi
+    if [ -z "$name" ]; then
+        err "Application name cannot be empty."
+        return 1
+    fi
+
+    if [ -z "$cmd" ] && [ "$is_close_only" = false ]; then
+        prompted=true
+        read -r -p "Launch command (e.g. code ~/project or flatpak run ...): " cmd
+        if [ -z "$cmd" ]; then
+            err "Launch command cannot be empty unless --close-only is used."
+            return 1
+        fi
+    fi
+
+    if [ -z "$pattern" ]; then
+        local default_pat=""
+        if [ -n "$cmd" ]; then
+            default_pat="${cmd%% *}"
+            default_pat="${default_pat##*/}"
+            default_pat="${default_pat//\"/}"
+        fi
+        prompted=true
+        read -r -p "Process match pattern for pgrep/pkill [${default_pat}]: " pattern
+        pattern="${pattern:-$default_pat}"
+    fi
+    if [ -z "$pattern" ]; then
+        err "Process pattern cannot be empty."
+        return 1
+    fi
+
+    if [ -z "$classes" ]; then
+        prompted=true
+        read -r -p "KWin window resourceClass/resourceName (comma-separated) [${pattern}]: " classes
+        classes="${classes:-$pattern}"
+    fi
+
+    if [ "$is_close_only" = false ]; then
+        if [ "$prompted" = true ] && [ "${#flag_list[@]}" -eq 0 ]; then
+            local ans
+            read -r -p "Keep app open on 'stop-workspace' unless '--all' is used? [y/N]: " ans
+            [[ "$ans" =~ ^[Yy]$ ]] && flag_list+=("keep_open")
+        fi
+
+        if [[ "$cmd" == flatpak\ run\ * ]] && [[ " ${flag_list[*]} " != *" flatpak "* ]]; then
+            flag_list+=("flatpak")
+        fi
+    fi
+
+    validate_no_pipe "$name" "name" || return 1
+    validate_no_pipe "$pattern" "pattern" || return 1
+    validate_no_pipe "$classes" "classes" || return 1
+    validate_no_pipe "$cmd" "cmd" || return 1
+
+    local flags_joined=""
+    if [ "${#flag_list[@]}" -gt 0 ]; then
+        local IFS=','
+        flags_joined="${flag_list[*]}"
+    fi
+
+    printf "%s|%s|%s|%s|%s|%s\n" "$desktop" "$name" "$pattern" "$classes" "$flags_joined" "$cmd" >> "$CONFIG_FILE"
+    success "Added '$name' (Desktop $desktop) to $CONFIG_FILE"
+}
+
+cmd_remove() {
+    ensure_config_exists
+    load_config_lines
+
+    if [ "${#CONFIG_LINES[@]}" -eq 0 ]; then
+        warn "Configuration is empty."
+        return 0
+    fi
+
+    local target_idx="${1:-}"
+    if [ -z "$target_idx" ]; then
+        cmd_list
+        read -r -p "Enter entry # to remove (or blank to cancel): " target_idx
+        [ -z "$target_idx" ] && { info "Cancelled."; return 0; }
+    fi
+
+    if ! [[ "$target_idx" =~ ^[0-9]+$ ]] || [ "$target_idx" -lt 1 ] || [ "$target_idx" -gt "${#CONFIG_LINES[@]}" ]; then
+        err "Invalid entry number: $target_idx (valid: 1-${#CONFIG_LINES[@]})."
+        return 1
+    fi
+
+    local tmp_file
+    tmp_file="$(mktemp)"
+    local active_idx=0
+    local removed_name=""
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]]; then
+            printf "%s\n" "$line" >> "$tmp_file"
+            continue
+        fi
+        active_idx=$((active_idx + 1))
+        if [ "$active_idx" -eq "$target_idx" ]; then
+            IFS='|' read -r _ removed_name _ <<< "$line"
+            continue
+        fi
+        printf "%s\n" "$line" >> "$tmp_file"
+    done < "$CONFIG_FILE"
+
+    mv "$tmp_file" "$CONFIG_FILE"
+    success "Removed entry #$target_idx ($removed_name)."
+}
+
+cmd_install() {
+    mkdir -p "$BIN_DIR"
+    for s in "${MANAGED_SCRIPTS[@]}"; do
+        local src="$SCRIPT_DIR/$s"
+        local dst="$BIN_DIR/$s"
+        if [ ! -f "$src" ]; then
+            err "Missing script: $src"
+            return 1
+        fi
+        chmod +x "$src"
+        ln -sf "$src" "$dst"
+        success "Linked $dst -> $src"
+    done
+
+    case ":$PATH:" in
+        *":$BIN_DIR:"*)
+            success "$BIN_DIR is already in your \$PATH."
+            ;;
+        *)
+            warn "$BIN_DIR is NOT in your \$PATH."
+            echo "    Add this line to ~/.bashrc or ~/.zshrc:"
+            echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
+            ;;
+    esac
+}
+
+cmd_uninstall() {
+    local removed=0
+    for s in "${MANAGED_SCRIPTS[@]}"; do
+        local dst="$BIN_DIR/$s"
+        if [ -L "$dst" ] || [ -f "$dst" ]; then
+            rm -f "$dst"
+            success "Removed $dst"
+            removed=$((removed + 1))
+        fi
+    done
+    if [ "$removed" -eq 0 ]; then
+        info "No installed symlinks found in $BIN_DIR."
+    fi
+}
+
+get_max_configured_desktop() {
+    local max_d=1
+    [ -f "$CONFIG_FILE" ] || { echo "3"; return; }
+    load_config_lines
+    for line in "${CONFIG_LINES[@]}"; do
+        local desktop
+        IFS='|' read -r desktop _ <<< "$line"
+        if [[ "$desktop" =~ ^[0-9]+$ ]] && [ "$desktop" -gt "$max_d" ]; then
+            max_d="$desktop"
+        fi
+    done
+    echo "$max_d"
+}
+
+cmd_ensure_desktops() {
+    if ! command -v qdbus6 >/dev/null 2>&1; then
+        err "qdbus6 is not installed; cannot manage KDE Virtual Desktops."
+        return 1
+    fi
+
+    local target_count
+    target_count="$(get_max_configured_desktop)"
+    local current_count
+    current_count="$(qdbus6 org.kde.KWin /VirtualDesktopManager count 2>/dev/null || true)"
+
+    if ! [[ "$current_count" =~ ^[0-9]+$ ]]; then
+        err "Could not query KWin VirtualDesktopManager (is KDE Plasma running?)."
+        return 1
+    fi
+
+    if [ "$current_count" -ge "$target_count" ]; then
+        success "KDE Plasma already has $current_count Virtual Desktops (need $target_count)."
+        return 0
+    fi
+
+    info "Creating Virtual Desktops ($current_count -> $target_count)..."
+    local pos="$current_count"
+    while [ "$pos" -lt "$target_count" ]; do
+        local num=$((pos + 1))
+        qdbus6 org.kde.KWin /VirtualDesktopManager createDesktop "$pos" "Desktop $num" >/dev/null 2>&1
+        pos=$((pos + 1))
+    done
+    success "Virtual Desktop count is now $target_count."
+}
+
+cmd_doctor() {
+    printf "\n${BOLD}Workspace Environment Check${RESET}\n\n"
+
+    # 1. Core tools
+    local required_tools=("bash" "pgrep" "pkill")
+    for t in "${required_tools[@]}"; do
+        if command -v "$t" >/dev/null 2>&1; then
+            success "Tool available: $t"
+        else
+            err "Missing required tool: $t"
+        fi
+    done
+
+    local optional_tools=("qdbus6" "notify-send" "flatpak")
+    for t in "${optional_tools[@]}"; do
+        if command -v "$t" >/dev/null 2>&1; then
+            success "Optional tool available: $t"
+        else
+            warn "Optional tool not found: $t"
+        fi
+    done
+
+    # 2. KDE Plasma / KWin D-Bus
+    if command -v qdbus6 >/dev/null 2>&1; then
+        local desktop_count
+        desktop_count="$(qdbus6 org.kde.KWin /VirtualDesktopManager count 2>/dev/null || true)"
+        if [[ "$desktop_count" =~ ^[0-9]+$ ]]; then
+            local needed
+            needed="$(get_max_configured_desktop)"
+            if [ "$desktop_count" -ge "$needed" ]; then
+                success "KDE KWin reachable: $desktop_count Virtual Desktops (need >= $needed)"
+            else
+                warn "KDE KWin has $desktop_count Virtual Desktops, but config uses Desktop $needed (run 'setup-workspace ensure-desktops')"
+            fi
+        else
+            warn "KDE KWin D-Bus is not reachable (normal if not running inside a Plasma session)"
+        fi
+    fi
+
+    # 3. CLI installation & PATH
+    local all_linked=true
+    for s in "${MANAGED_SCRIPTS[@]}"; do
+        if [ ! -x "$BIN_DIR/$s" ]; then
+            all_linked=false
+            break
+        fi
+    done
+    if [ "$all_linked" = true ]; then
+        success "CLI commands installed in $BIN_DIR"
+    else
+        warn "CLI commands not yet installed in $BIN_DIR (run 'setup-workspace install')"
+    fi
+
+    case ":$PATH:" in
+        *":$BIN_DIR:"*) success "$BIN_DIR is in \$PATH" ;;
+        *) warn "$BIN_DIR is not in \$PATH" ;;
+    esac
+
+    # 4. Config & configured app binaries
+    if [ ! -f "$CONFIG_FILE" ]; then
+        warn "No custom config at $CONFIG_FILE (using built-in defaults; run 'setup-workspace init' to customize)"
+        echo ""
+        return 0
+    fi
+
+    success "Config found: $CONFIG_FILE"
+    load_config_lines
+    echo ""
+    printf "${BOLD}Configured Application Checks${RESET}\n"
+    for line in "${CONFIG_LINES[@]}"; do
+        local desktop name proc classes flags cmd
+        IFS='|' read -r desktop name proc classes flags cmd <<< "$line"
+        [[ ",$flags," == *",close_only,"* ]] || [ "$desktop" = "0" ] && continue
+
+        local cmd_args=()
+        if [ -n "$cmd" ]; then
+            mapfile -t cmd_args < <(printf '%s\n' "$cmd" | xargs -n1 printf '%s\n' 2>/dev/null || true)
+        fi
+        local bin="${cmd_args[0]:-}"
+        if [ -z "$bin" ]; then
+            warn "$name: empty command"
+            continue
+        fi
+
+        if [ -x "$bin" ] || command -v "$bin" >/dev/null 2>&1; then
+            if [[ ",$flags," == *",check_arg1,"* ]] && [ -n "${cmd_args[1]:-}" ] && [ ! -e "${cmd_args[1]}" ]; then
+                warn "$name: binary OK ($bin), optional file missing (${cmd_args[1]})"
+            else
+                success "$name: OK ($bin)"
+            fi
+        else
+            warn "$name: executable not found ($bin)"
+        fi
+    done
+    echo ""
+}
+
+cmd_reset() {
+    local auto_yes=false
+    for arg in "$@"; do
+        case "$arg" in
+            -y|--yes) auto_yes=true ;;
+            *) err "Unknown option for reset: $arg"; return 1 ;;
+        esac
+    done
+
+    if [ "$auto_yes" = false ]; then
+        local ans
+        read -r -p "Overwrite $CONFIG_FILE with defaults? [y/N]: " ans
+        if [[ ! "$ans" =~ ^[Yy]$ ]]; then
+            info "Cancelled."
+            return 0
+        fi
+    fi
+
+    write_default_config
+    success "Reset configuration to defaults at: $CONFIG_FILE"
+}
+
+interactive_menu() {
+    while true; do
+        printf "\n${BOLD}=== Workspace Setup (Terminal Menu) ===${RESET}\n"
+        printf "Config: ${DIM}%s${RESET}\n\n" "$CONFIG_FILE"
+        echo "  1) Quick setup (init config + install to ~/.local/bin + check system)"
+        echo "  2) List configured workspace apps"
+        echo "  3) Add a new app to workspace"
+        echo "  4) Remove an app from workspace"
+        echo "  5) Check dependencies & environment (doctor)"
+        echo "  6) Ensure KDE Virtual Desktops match config"
+        echo "  7) Install / Update CLI commands (~/.local/bin)"
+        echo "  8) Uninstall CLI commands (~/.local/bin)"
+        echo "  9) Reset configuration to defaults"
+        echo " 10) Run start-workspace now"
+        echo "  0) Exit"
+        echo ""
+        read -r -p "Choose an option [0-10]: " choice
+
+        case "$choice" in
+            1)
+                cmd_init
+                cmd_install
+                cmd_doctor
+                ;;
+            2) cmd_list ;;
+            3) cmd_add ;;
+            4) cmd_remove ;;
+            5) cmd_doctor ;;
+            6) cmd_ensure_desktops ;;
+            7) cmd_install ;;
+            8) cmd_uninstall ;;
+            9) cmd_reset ;;
+            10) "$SCRIPT_DIR/start-workspace" ;;
+            0|q|Q)
+                info "Bye!"
+                return 0
+                ;;
+            *)
+                warn "Invalid option: $choice"
+                ;;
+        esac
+    done
+}
+
+# --- Entrypoint ---
+if [ "$#" -eq 0 ]; then
+    interactive_menu
+    exit $?
+fi
+
+subcmd="$1"
+shift
+
+case "$subcmd" in
+    init)            cmd_init "$@" ;;
+    list)            cmd_list "$@" ;;
+    add)             cmd_add "$@" ;;
+    remove|rm)       cmd_remove "$@" ;;
+    install)         cmd_install "$@" ;;
+    uninstall)       cmd_uninstall "$@" ;;
+    doctor|check)    cmd_doctor "$@" ;;
+    ensure-desktops) cmd_ensure_desktops "$@" ;;
+    reset)           cmd_reset "$@" ;;
+    path)            echo "$CONFIG_FILE" ;;
+    -h|--help|help)  print_help ;;
+    *)
+        err "Unknown command: $subcmd"
+        echo "Run 'setup-workspace --help' for usage."
+        exit 1
+        ;;
+esac

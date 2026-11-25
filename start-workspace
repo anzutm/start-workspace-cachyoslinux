@@ -7,6 +7,8 @@
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
 
+CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/start-workspace/workspace.conf"
+
 echo "[*] Starting Workspace Setup..."
 
 # Reapply KWin rules
@@ -29,40 +31,96 @@ launch_if_not_running() {
     fi
 }
 
-# --- Desktop 1 (Coding & Notes) ---
-# 1. Antigravity IDE (Workspace: glass-dock-widget)
-launch_if_not_running "antigravity-ide" antigravity-ide "/home/anzu/Documents/Coding Project/glass-dock-widget"
+CUSTOM_RULES_JS=""
 
-# 2. Ptyxis Terminal
-launch_if_not_running "ptyxis" ptyxis
+launch_from_config() {
+    local rule_lines=""
 
-# 3. GNOME Text Editor (CachyOS Notes)
-if [ -f "/home/anzu/Documents/Cachyos Gnome Command.md" ]; then
-    launch_if_not_running "gnome-text-editor" gnome-text-editor "/home/anzu/Documents/Cachyos Gnome Command.md"
+    while IFS= read -r line || [ -n "$line" ]; do
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+
+        local desktop name proc_pattern win_classes flags cmd_str
+        IFS='|' read -r desktop name proc_pattern win_classes flags cmd_str <<< "$line"
+
+        [[ ",$flags," == *",close_only,"* ]] && continue
+        [[ ! "$desktop" =~ ^[1-9][0-9]*$ ]] && continue
+        [ -z "$cmd_str" ] && continue
+
+        local cmd_args=()
+        mapfile -t cmd_args < <(printf '%s\n' "$cmd_str" | xargs -n1 printf '%s\n' 2>/dev/null || true)
+        [ "${#cmd_args[@]}" -eq 0 ] && continue
+
+        # Optional existence checks
+        if [[ ",$flags," == *",check_cmd,"* ]]; then
+            if [ ! -x "${cmd_args[0]}" ] && ! command -v "${cmd_args[0]}" >/dev/null 2>&1; then
+                continue
+            fi
+        fi
+        if [[ ",$flags," == *",check_arg1,"* ]] && [ -n "${cmd_args[1]:-}" ]; then
+            [ -f "${cmd_args[1]}" ] || continue
+        fi
+
+        launch_if_not_running "$proc_pattern" "${cmd_args[@]}"
+
+        local desk_idx=$((desktop - 1))
+        if [ -n "$win_classes" ]; then
+            local cls_arr=()
+            IFS=',' read -ra cls_arr <<< "$win_classes"
+            for cls in "${cls_arr[@]}"; do
+                cls="${cls//\"/}"
+                cls="${cls//\\/}"
+                [ -z "$cls" ] && continue
+                rule_lines+="    \"${cls}\": ${desk_idx},"$'\n'
+            done
+        fi
+    done < "$CONFIG_FILE"
+
+    CUSTOM_RULES_JS="$rule_lines"
+}
+
+launch_defaults() {
+    # --- Desktop 1 (Coding & Notes) ---
+    # 1. Antigravity IDE (Workspace: glass-dock-widget)
+    launch_if_not_running "antigravity-ide" antigravity-ide "/home/anzu/Documents/Coding Project/glass-dock-widget"
+
+    # 2. Ptyxis Terminal
+    launch_if_not_running "ptyxis" ptyxis
+
+    # 3. GNOME Text Editor (CachyOS Notes)
+    if [ -f "/home/anzu/Documents/Cachyos Gnome Command.md" ]; then
+        launch_if_not_running "gnome-text-editor" gnome-text-editor "/home/anzu/Documents/Cachyos Gnome Command.md"
+    fi
+
+    # 4. Files (File Manager)
+    if command -v nautilus >/dev/null 2>&1; then
+        launch_if_not_running "nautilus" nautilus
+    elif command -v dolphin >/dev/null 2>&1; then
+        launch_if_not_running "dolphin" dolphin
+    fi
+
+    # --- Desktop 2 (Entertainment & Web) ---
+    # 5. Chromium Browser
+    launch_if_not_running "chromium" chromium
+
+    # 6. AniBase (Anime Streaming & Library)
+    if [ -f "/home/anzu/Documents/Coding Project/anibase-local/releases/AniBase v1.5.5/AniBase" ]; then
+        launch_if_not_running "AniBase" "/home/anzu/Documents/Coding Project/anibase-local/releases/AniBase v1.5.5/AniBase"
+    fi
+
+    # --- Desktop 3 (System, Utilities & Gaming) ---
+    # 7. Twintail Launcher (Flatpak - Wuthering Waves)
+    launch_if_not_running "twintaillauncher" flatpak run app.twintaillauncher.ttl
+
+    # 8. Omen Space
+    launch_if_not_running "omen-gui" omen-gui
+}
+
+if [ -f "$CONFIG_FILE" ]; then
+    echo "[*] Using configuration: $CONFIG_FILE"
+    launch_from_config
+else
+    launch_defaults
 fi
-
-# 4. Files (File Manager)
-if command -v nautilus >/dev/null 2>&1; then
-    launch_if_not_running "nautilus" nautilus
-elif command -v dolphin >/dev/null 2>&1; then
-    launch_if_not_running "dolphin" dolphin
-fi
-
-# --- Desktop 2 (Entertainment & Web) ---
-# 5. Chromium Browser
-launch_if_not_running "chromium" chromium
-
-# 6. AniBase (Anime Streaming & Library)
-if [ -f "/home/anzu/Documents/Coding Project/anibase-local/releases/AniBase v1.5.5/AniBase" ]; then
-    launch_if_not_running "AniBase" "/home/anzu/Documents/Coding Project/anibase-local/releases/AniBase v1.5.5/AniBase"
-fi
-
-# --- Desktop 3 (System, Utilities & Gaming) ---
-# 7. Twintail Launcher (Flatpak - Wuthering Waves)
-launch_if_not_running "twintaillauncher" flatpak run app.twintaillauncher.ttl
-
-# 8. Omen Space
-launch_if_not_running "omen-gui" omen-gui
 
 # --- KWin Window Organizer (Wayland Native) ---
 # Ensure all newly opened windows are moved to their respective Desktops
@@ -71,8 +129,11 @@ organize_windows() {
         return
     fi
 
-    local js_code='
-var rules = {
+    local rules_body
+    if [ -f "$CONFIG_FILE" ]; then
+        rules_body="$CUSTOM_RULES_JS"
+    else
+        rules_body='
     // Desktop 1 (Index 0)
     "antigravity-ide": 0,
     "org.gnome.Ptyxis": 0,
@@ -95,7 +156,12 @@ var rules = {
     "app.twintaillauncher.ttl": 2,
     "client-win64-shipping.exe": 2,
     "org.hp.OmenSpace": 2,
-    "omen-gui": 2
+    "omen-gui": 2'
+    fi
+
+    local js_code="
+var rules = {
+${rules_body}
 };
 
 var clients = workspace.windowList();
@@ -107,7 +173,7 @@ for (var i = 0; i < clients.length; i++) {
         c.desktops = [workspace.desktops[target]];
     }
 }
-'
+"
     local tmp_script="/tmp/kwin_organize_$$.js"
     echo "$js_code" > "$tmp_script"
 
@@ -119,7 +185,7 @@ for (var i = 0; i < clients.length; i++) {
     rm -f "$tmp_script"
 }
 
-echo "[*] Organizing windows across Desktops 1, 2, and 3..."
+echo "[*] Organizing windows across configured Desktops..."
 organize_windows
 
 # Wait briefly for applications whose windows take longer to render (Flatpak / Electron)
@@ -136,4 +202,4 @@ if command -v notify-send >/dev/null 2>&1; then
     notify-send -i preferences-desktop-display "Workspace Setup" "All work & leisure workspace apps have been launched!"
 fi
 
-echo "[✓] Done! All applications have been placed on Desktops 1-3."
+echo "[✓] Done! All applications have been placed on their configured Desktops."

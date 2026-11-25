@@ -1,19 +1,20 @@
 # Start Workspace — CachyOS / KDE Plasma
 
-Bash scripts to automatically launch (`start-workspace`) and stop (`stop-workspace`) a daily multi-desktop workspace on **CachyOS** with **KDE Plasma 6 (Wayland)**, complete with automatic window placement across Virtual Desktops 1–3 using **KWin Scripting** via `qdbus6`.
+Bash scripts to set up (`setup-workspace`), automatically launch (`start-workspace`), and stop (`stop-workspace`) a daily multi-desktop workspace on **CachyOS** with **KDE Plasma 6 (Wayland)**, complete with automatic window placement across Virtual Desktops using **KWin Scripting** via `qdbus6`.
 
 ## Features
 
+- **Terminal Setup Wizard & CLI (`setup-workspace`)**: initialize configuration, add/remove workspace apps, install CLI symlinks to `~/.local/bin`, verify dependencies (`doctor`), and create missing KDE Virtual Desktops directly from the terminal.
 - **Idempotent launching**: checks running processes with `pgrep -f` so already-open applications are not launched again.
-- **Wayland-native window placement**: uses KWin Scripting (`org.kde.kwin.Scripting`) to move windows to Virtual Desktops 1, 2, or 3 by `resourceClass` / `resourceName`, then switches focus back to Desktop 1.
+- **Wayland-native window placement**: uses KWin Scripting (`org.kde.kwin.Scripting`) to move windows to their assigned Virtual Desktops by `resourceClass` / `resourceName`, then switches focus back to Desktop 1.
 - **Graceful & forced shutdown**: `stop-workspace` first closes windows cleanly via `c.closeWindow()` in KWin, then terminates any remaining background processes (or force-kills them with `-f`/`--force`).
 - **Desktop notifications**: sends status updates via `notify-send` once the workspace is started or stopped.
 
-## Virtual Desktop Layout
+## Default Virtual Desktop Layout
 
-Make sure KDE Plasma has at least **3 Virtual Desktops** configured for automatic window placement to work properly.
+Make sure KDE Plasma has at least **3 Virtual Desktops** configured (or run `./setup-workspace ensure-desktops`).
 
-| Desktop | Category | Apps in `start-workspace` |
+| Desktop | Category | Apps in Default Setup |
 | :--- | :--- | :--- |
 | **Desktop 1** | Coding & Notes | Antigravity IDE (`glass-dock-widget`), Ptyxis Terminal, GNOME Text Editor (`Cachyos Gnome Command.md`), Nautilus / Dolphin |
 | **Desktop 2** | Entertainment & Web | Chromium Browser, AniBase (`AniBase v1.5.5`) |
@@ -26,37 +27,55 @@ Make sure KDE Plasma has at least **3 Virtual Desktops** configured for automati
 - **OS / Desktop**: CachyOS (or another Linux distro) running KDE Plasma 6 (Wayland)
 - **System utilities**:
   - `bash`, `pgrep` / `pkill` (`procps-ng`)
-  - `qdbus6` (`qt6-tools`) for KWin Scripting and Virtual Desktop switching
+  - `qdbus6` (`qt6-tools`) for KWin Scripting and Virtual Desktop management
   - `notify-send` (`libnotify`, optional for desktop notifications)
-  - `flatpak` (optional, for Twintail Launcher)
+  - `flatpak` (optional, for Flatpak apps)
 
-## Installation
+## Installation & Terminal Setup
 
-Clone this repository and ensure both scripts are executable:
+Clone this repository and run `setup-workspace`:
 
 ```bash
 git clone https://github.com/anzutm/start-workspace-cachyoslinux.git
 cd start-workspace-cachyoslinux
-chmod +x start-workspace stop-workspace
+chmod +x setup-workspace start-workspace stop-workspace
+./setup-workspace
 ```
 
-(Optional) Symlink them into `~/.local/bin` to run them from anywhere:
+Or run the one-step setup commands directly:
 
 ```bash
-mkdir -p ~/.local/bin
-ln -sf "$(pwd)/start-workspace" ~/.local/bin/start-workspace
-ln -sf "$(pwd)/stop-workspace" ~/.local/bin/stop-workspace
+./setup-workspace init       # Create ~/.config/start-workspace/workspace.conf
+./setup-workspace install    # Symlink scripts into ~/.local/bin
+./setup-workspace doctor     # Check tools, KWin, Virtual Desktops, and app paths
 ```
 
 ## Usage
 
-### Start Workspace
+### Terminal Setup (`setup-workspace`)
+
+Run `./setup-workspace` with no arguments to open the interactive terminal menu, or use CLI subcommands:
+
+| Command | Description |
+| :--- | :--- |
+| `setup-workspace` | Open interactive setup menu |
+| `setup-workspace init [--force]` | Create default `workspace.conf` |
+| `setup-workspace list` | List all configured apps per desktop |
+| `setup-workspace add [OPTIONS]` | Add an app (interactive or via flags) |
+| `setup-workspace remove [INDEX]` | Remove an app entry by number |
+| `setup-workspace install` | Symlink scripts into `~/.local/bin` |
+| `setup-workspace uninstall` | Remove symlinks from `~/.local/bin` |
+| `setup-workspace doctor` | Verify dependencies, KWin D-Bus, and paths |
+| `setup-workspace ensure-desktops` | Create KDE Virtual Desktops to match config |
+| `setup-workspace reset [--yes]` | Reset `workspace.conf` back to defaults |
+
+Example adding an app via CLI:
 
 ```bash
-./start-workspace
+setup-workspace add --desktop 2 --name "Firefox" --pattern firefox --classes firefox --cmd firefox
 ```
 
-Or if symlinked to `~/.local/bin`:
+### Start Workspace
 
 ```bash
 start-workspace
@@ -65,33 +84,43 @@ start-workspace
 ### Stop Workspace
 
 ```bash
-./stop-workspace [OPTIONS]
+stop-workspace [OPTIONS]
 ```
 
 Available options:
 
 | Option | Description |
 | :--- | :--- |
-| `-a`, `--all` | Also close the Ptyxis terminal window |
+| `-a`, `--all` | Also close `keep_open` apps (such as Ptyxis terminal) |
 | `-f`, `--force` | Force-kill unresponsive processes (`pkill -9 -f`) |
 | `-h`, `--help` | Show help message |
 
 Examples:
 
 ```bash
-# Close all workspace apps while keeping Ptyxis open
-./stop-workspace
+# Close workspace apps while keeping Ptyxis open
+stop-workspace
 
 # Close all workspace apps including Ptyxis
-./stop-workspace --all
+stop-workspace --all
 
 # Force-kill all workspace processes including Ptyxis
-./stop-workspace -a -f
+stop-workspace -a -f
 ```
 
-## Customization
+## Configuration File (`workspace.conf`)
 
-Edit the paths, process patterns, and window rules directly inside each script:
+When initialized via `setup-workspace`, your configuration is stored at `~/.config/start-workspace/workspace.conf` using a pipe-delimited format:
 
-- **[`start-workspace`](start-workspace)**: update the `launch_if_not_running` arguments (such as your IDE workspace path, markdown notes, or local binaries) and the `rules` object inside `organize_windows()` to map `resourceClass` / `resourceName` values to desktop indices (`0` = Desktop 1, `1` = Desktop 2, `2` = Desktop 3).
-- **[`stop-workspace`](stop-workspace)**: update the `targets` array in the KWin script and the `close_proc` calls to match the applications you want to stop.
+```text
+DESKTOP|NAME|PROC_PATTERN|WINDOW_CLASSES|FLAGS|COMMAND
+```
+
+- **`DESKTOP`**: 1-based Virtual Desktop number (`0` for `close_only` entries in `stop-workspace`).
+- **`NAME`**: Display name.
+- **`PROC_PATTERN`**: Pattern passed to `pgrep -f` / `pkill -f`.
+- **`WINDOW_CLASSES`**: Comma-separated KWin `resourceClass` / `resourceName` values.
+- **`FLAGS`**: Optional comma-separated flags (`keep_open`, `flatpak`, `check_cmd`, `check_arg1`, `close_only`).
+- **`COMMAND`**: Command used to launch the app.
+
+If `~/.config/start-workspace/workspace.conf` does not exist, `start-workspace` and `stop-workspace` fall back to their built-in defaults.
