@@ -79,54 +79,57 @@ launch_from_config() {
 }
 
 launch_defaults() {
+    # No workspace.conf found. Auto-detect and launch whatever is installed.
     # --- Desktop 1 (Coding & Notes) ---
-    # 1. Antigravity IDE
     if command -v antigravity-ide >/dev/null 2>&1; then
-        if [ -d "/home/anzu/Documents/Coding Project/glass-dock-widget" ]; then
-            launch_if_not_running "antigravity-ide" antigravity-ide "/home/anzu/Documents/Coding Project/glass-dock-widget"
-        else
-            launch_if_not_running "antigravity-ide" antigravity-ide
-        fi
+        launch_if_not_running "antigravity-ide" antigravity-ide
+    elif command -v code >/dev/null 2>&1; then
+        launch_if_not_running "code" code
+    elif command -v codium >/dev/null 2>&1; then
+        launch_if_not_running "codium" codium
     fi
 
-    # 2. Ptyxis Terminal
     if command -v ptyxis >/dev/null 2>&1; then
         launch_if_not_running "ptyxis" ptyxis
+    elif command -v konsole >/dev/null 2>&1; then
+        launch_if_not_running "konsole" konsole
+    elif command -v kitty >/dev/null 2>&1; then
+        launch_if_not_running "kitty" kitty
     fi
 
-    # 3. GNOME Text Editor (CachyOS Notes)
-    if command -v gnome-text-editor >/dev/null 2>&1 && [ -f "/home/anzu/Documents/Cachyos Gnome Command.md" ]; then
-        launch_if_not_running "gnome-text-editor" gnome-text-editor "/home/anzu/Documents/Cachyos Gnome Command.md"
+    if command -v gnome-text-editor >/dev/null 2>&1; then
+        launch_if_not_running "gnome-text-editor" gnome-text-editor
+    elif command -v kate >/dev/null 2>&1; then
+        launch_if_not_running "kate" kate
     fi
 
-    # 4. Files (File Manager)
     if command -v nautilus >/dev/null 2>&1; then
         launch_if_not_running "nautilus" nautilus
     elif command -v dolphin >/dev/null 2>&1; then
         launch_if_not_running "dolphin" dolphin
     fi
 
-    # --- Desktop 2 (Entertainment & Web) ---
-    # 5. Chromium Browser
+    # --- Desktop 2 (Web) ---
     if command -v chromium >/dev/null 2>&1; then
         launch_if_not_running "chromium" chromium
+    elif command -v firefox >/dev/null 2>&1; then
+        launch_if_not_running "firefox" firefox
+    elif command -v brave >/dev/null 2>&1; then
+        launch_if_not_running "brave" brave
     fi
 
-    # 6. AniBase (Anime Streaming & Library)
-    if [ -x "/home/anzu/Documents/Coding Project/anibase-local/releases/AniBase v1.5.5/AniBase" ]; then
-        launch_if_not_running "AniBase" "/home/anzu/Documents/Coding Project/anibase-local/releases/AniBase v1.5.5/AniBase"
+    # --- Desktop 3 (Gaming / Utilities) ---
+    if command -v steam >/dev/null 2>&1; then
+        launch_if_not_running "steam" steam
     fi
 
-    # --- Desktop 3 (System, Utilities & Gaming) ---
-    # 7. Twintail Launcher (Flatpak - Wuthering Waves)
-    if command -v flatpak >/dev/null 2>&1 && flatpak info app.twintaillauncher.ttl >/dev/null 2>&1; then
-        launch_if_not_running "twintaillauncher" flatpak run app.twintaillauncher.ttl
+    if command -v resources >/dev/null 2>&1; then
+        launch_if_not_running "resources" resources
+    elif command -v plasma-systemmonitor >/dev/null 2>&1; then
+        launch_if_not_running "plasma-systemmonitor" plasma-systemmonitor
     fi
 
-    # 8. Omen Space
-    if command -v omen-gui >/dev/null 2>&1; then
-        launch_if_not_running "omen-gui" omen-gui
-    fi
+    echo "[i] Tip: run 'setup-workspace init' to customize your workspace."
 }
 
 if [ -f "$CONFIG_FILE" ]; then

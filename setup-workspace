@@ -130,33 +130,8 @@ detect_browser_entry() {
 }
 
 write_personal_config() {
-    write_config_header
-    local fm_entry
-    fm_entry="$(detect_file_manager_entry)"
-    [ -z "$fm_entry" ] && fm_entry="1|Files|nautilus|org.gnome.Nautilus,nautilus,org.kde.dolphin,dolphin||nautilus"
-
-    cat >> "$CONFIG_FILE" << EOF
-
-# --- Desktop 1 (Coding & Notes) ---
-1|Antigravity IDE|antigravity-ide|antigravity-ide||antigravity-ide "/home/anzu/Documents/Coding Project/glass-dock-widget"
-1|Ptyxis Terminal|ptyxis|org.gnome.Ptyxis,ptyxis|keep_open|ptyxis
-1|GNOME Text Editor|gnome-text-editor|org.gnome.TextEditor|check_arg1|gnome-text-editor "/home/anzu/Documents/Cachyos Gnome Command.md"
-${fm_entry}
-
-# --- Desktop 2 (Entertainment & Web) ---
-2|Chromium Browser|chromium|chromium,Chromium,chromium-browser||chromium
-2|AniBase|AniBase|anibase,AniBase|check_cmd|"/home/anzu/Documents/Coding Project/anibase-local/releases/AniBase v1.5.5/AniBase"
-
-# --- Desktop 3 (System, Utilities & Gaming) ---
-3|Twintail Launcher|twintaillauncher|Twintaillauncher,twintaillauncher,app.twintaillauncher.ttl|flatpak|flatpak run app.twintaillauncher.ttl
-3|Omen Space|omen-gui|org.hp.OmenSpace,omen-gui||omen-gui
-
-# --- Close-only Targets (stopped by stop-workspace) ---
-0|Brave Browser|brave|brave-browser|close_only|
-0|AniBase Server/Tray|anibase|anibase|close_only|
-0|Wuthering Waves|client-win64-shipping.exe|client-win64-shipping.exe|close_only|
-0|Resources Monitor|resources|org.gnome.Resources,resources|close_only|
-EOF
+    # personal preset: author's own setup (paths hardcoded for the original author's machine)
+    write_auto_config
 }
 
 write_minimal_config() {
@@ -188,11 +163,7 @@ write_auto_config() {
         echo ""
         echo "# --- Desktop 1 (Coding & Notes) ---"
         if command -v antigravity-ide >/dev/null 2>&1; then
-            if [ -d "/home/anzu/Documents/Coding Project/glass-dock-widget" ]; then
-                echo '1|Antigravity IDE|antigravity-ide|antigravity-ide||antigravity-ide "/home/anzu/Documents/Coding Project/glass-dock-widget"'
-            else
-                echo "1|Antigravity IDE|antigravity-ide|antigravity-ide||antigravity-ide"
-            fi
+            echo "1|Antigravity IDE|antigravity-ide|antigravity-ide||antigravity-ide"
         elif command -v code >/dev/null 2>&1; then
             echo "1|VS Code|code|code,Code||code"
         elif command -v codium >/dev/null 2>&1; then
@@ -204,11 +175,7 @@ write_auto_config() {
         [ -n "$term_entry" ] && echo "$term_entry"
 
         if command -v gnome-text-editor >/dev/null 2>&1; then
-            if [ -f "/home/anzu/Documents/Cachyos Gnome Command.md" ]; then
-                echo '1|GNOME Text Editor|gnome-text-editor|org.gnome.TextEditor|check_arg1|gnome-text-editor "/home/anzu/Documents/Cachyos Gnome Command.md"'
-            else
-                echo "1|GNOME Text Editor|gnome-text-editor|org.gnome.TextEditor||gnome-text-editor"
-            fi
+            echo "1|GNOME Text Editor|gnome-text-editor|org.gnome.TextEditor||gnome-text-editor"
         elif command -v kate >/dev/null 2>&1; then
             echo "1|Kate|kate|org.kde.kate,kate||kate"
         fi
@@ -219,10 +186,7 @@ write_auto_config() {
         echo "# --- Desktop 2 (Entertainment & Web) ---"
         [ -n "$browser_entry" ] && echo "$browser_entry"
 
-        if [ -x "/home/anzu/Documents/Coding Project/anibase-local/releases/AniBase v1.5.5/AniBase" ]; then
-            echo '2|AniBase|AniBase|anibase,AniBase|check_cmd|"/home/anzu/Documents/Coding Project/anibase-local/releases/AniBase v1.5.5/AniBase"'
-            echo "0|AniBase Server/Tray|anibase|anibase|close_only|"
-        fi
+        # (Add your custom local apps here with 'setup-workspace add' or via the GUI)
 
         echo ""
         echo "# --- Desktop 3 (System, Utilities & Gaming) ---"
