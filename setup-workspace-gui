@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PyQt6 GUI for configuring start-workspace and stop-workspace on KDE Plasma."""
+"""Beginner-friendly PyQt6 GUI for configuring start-workspace and stop-workspace."""
 
 from __future__ import annotations
 
@@ -15,8 +15,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 try:
-    from PyQt6.QtCore import QProcess, Qt
-    from PyQt6.QtGui import QIcon
+    from PyQt6.QtCore import QProcess, QSize, Qt
+    from PyQt6.QtGui import QAction, QDesktopServices, QIcon
+    from PyQt6.QtCore import QUrl
     from PyQt6.QtWidgets import (
         QAbstractItemView,
         QApplication,
@@ -25,6 +26,7 @@ try:
         QDialogButtonBox,
         QFileDialog,
         QFormLayout,
+        QFrame,
         QGroupBox,
         QHBoxLayout,
         QHeaderView,
@@ -38,8 +40,10 @@ try:
         QPlainTextEdit,
         QPushButton,
         QSpinBox,
+        QTabBar,
         QTableWidget,
         QTableWidgetItem,
+        QToolButton,
         QVBoxLayout,
         QWidget,
     )
@@ -60,7 +64,7 @@ STOP_CLI = SCRIPT_DIR / "stop-workspace"
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "start-workspace"
 CONFIG_FILE = CONFIG_DIR / "workspace.conf"
 AUTOSTART_FILE = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "autostart" / "start-workspace.desktop"
-BIN_DIR = Path.home() / ".local" / "bin"
+LAUNCHER_FILE = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "applications" / "start-workspace-setup.desktop"
 
 CONFIG_HEADER = """# Workspace Manager Configuration
 # Format: DESKTOP|NAME|PROC_PATTERN|WINDOW_CLASSES|FLAGS|COMMAND
@@ -86,6 +90,22 @@ class WorkspaceEntry:
 
     def to_line(self) -> str:
         return f"{self.desktop}|{self.name}|{self.pattern}|{self.classes}|{self.flags}|{self.cmd}"
+
+    def flag_set(self) -> set[str]:
+        return {f.strip() for f in self.flags.split(",") if f.strip()}
+
+    def behavior_summary(self) -> str:
+        fset = self.flag_set()
+        if "close_only" in fset or self.desktop == 0:
+            return "Closes when stopping workspace"
+        parts = ["Opens automatically"]
+        if "keep_open" in fset:
+            parts.append("Stays open on stop")
+        else:
+            parts.append("Closes on stop")
+        if "flatpak" in fset:
+            parts.append("Flatpak")
+        return " • ".join(parts)
 
 
 def parse_config() -> list[WorkspaceEntry]:
@@ -291,23 +311,50 @@ def scan_desktop_apps() -> list[dict[str, str]]:
     return sorted(apps.values(), key=lambda a: a["name"].lower())
 
 
+def resolve_entry_icon(entry: WorkspaceEntry, app_icons: dict[str, str]) -> QIcon:
+    """Resolve a friendly system icon for a WorkspaceEntry."""
+    candidates: list[str] = []
+    if entry.name.lower() in app_icons:
+        candidates.append(app_icons[entry.name.lower()])
+    if entry.pattern:
+        candidates.append(entry.pattern)
+    for cls in entry.classes.split(","):
+        cls = cls.strip()
+        if cls:
+            candidates.append(cls)
+    for cand in candidates:
+        icon = QIcon.fromTheme(cand)
+        if not icon.isNull():
+            return icon
+    if entry.desktop == 0:
+        return QIcon.fromTheme("process-stop")
+    return QIcon.fromTheme("application-x-executable")
+
+
 class AppPickerDialog(QDialog):
     """Searchable dialog listing installed .desktop applications."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, apps: list[dict[str, str]] | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Pick Installed Application")
-        self.resize(560, 440)
+        self.setWindowTitle("Choose an Installed App")
+        self.resize(540, 440)
         self.selected_app: dict[str, str] | None = None
-        self.apps = scan_desktop_apps()
+        self.apps = apps if apps is not None else scan_desktop_apps()
 
         layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        hint = QLabel("Search for an app installed on your computer and double-click it:")
+        layout.addWidget(hint)
+
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Search installed apps (e.g. Firefox, VS Code, Steam)...")
+        self.search.setPlaceholderText("Type app name (e.g. Firefox, VS Code, Terminal, Steam)...")
+        self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._filter)
         layout.addWidget(self.search)
 
         self.list_widget = QListWidget()
+        self.list_widget.setIconSize(QSize(24, 24))
         self.list_widget.itemDoubleClicked.connect(self._accept_selected)
         layout.addWidget(self.list_widget)
 
@@ -317,17 +364,16 @@ class AppPickerDialog(QDialog):
         layout.addWidget(buttons)
 
         self._populate("")
+        self.search.setFocus()
 
     def _populate(self, query: str) -> None:
         self.list_widget.clear()
         q = query.strip().lower()
         for app in self.apps:
-            # search across name, exec path, and the basename of the executable
             exec_base = Path(app["exec"].split()[0]).name if app["exec"] else ""
             if q and q not in app["name"].lower() and q not in app["exec"].lower() and q not in exec_base.lower():
                 continue
-            # Show name and just the executable basename for readability
-            display = f"{app['name']}  ({exec_base})" if exec_base != app["exec"] else f"{app['name']}  —  {app['exec']}"
+            display = f"{app['name']}  ({exec_base})" if exec_base else app["name"]
             item = QListWidgetItem(display)
             if app["icon"]:
                 icon = QIcon.fromTheme(app["icon"])
@@ -335,7 +381,6 @@ class AppPickerDialog(QDialog):
                     item.setIcon(icon)
             item.setData(Qt.ItemDataRole.UserRole, app)
             self.list_widget.addItem(item)
-        # Auto-select first visible item for keyboard usability
         if self.list_widget.count() > 0:
             self.list_widget.setCurrentRow(0)
 
@@ -346,7 +391,7 @@ class AppPickerDialog(QDialog):
         item = self.list_widget.currentItem()
         if not item:
             if self.list_widget.count() == 0:
-                return  # Nothing to pick
+                return
             self.list_widget.setCurrentRow(0)
             item = self.list_widget.currentItem()
         if item:
@@ -359,16 +404,16 @@ class OpenWindowPickerDialog(QDialog):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Pick Open KWin Window")
-        self.resize(680, 360)
+        self.setWindowTitle("Detect from Open Window")
+        self.resize(660, 360)
         self.selected_row: tuple[str, str, str, str] | None = None
 
         layout = QVBoxLayout(self)
-        hint = QLabel("Double-click an open window to copy its KWin resourceClass / resourceName and Desktop:")
+        hint = QLabel("Double-click an open window below to automatically fill its window ID and Desktop:")
         layout.addWidget(hint)
 
         self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Desktop", "resourceClass", "resourceName", "Window Title"])
+        self.table.setHorizontalHeaderLabels(["Desktop", "Window Class", "Window Name", "Title"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -377,7 +422,7 @@ class OpenWindowPickerDialog(QDialog):
         layout.addWidget(self.table)
 
         btn_row = QHBoxLayout()
-        refresh_btn = QPushButton("Refresh")
+        refresh_btn = QPushButton(QIcon.fromTheme("view-refresh"), "Refresh")
         refresh_btn.clicked.connect(self._load)
         btn_row.addWidget(refresh_btn)
         btn_row.addStretch()
@@ -412,84 +457,120 @@ class OpenWindowPickerDialog(QDialog):
 
 
 class EntryDialog(QDialog):
-    """Add or edit a WorkspaceEntry."""
+    """Beginner-friendly Add/Edit dialog with collapsible Advanced Settings."""
 
-    def __init__(self, entry: WorkspaceEntry | None = None, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        entry: WorkspaceEntry | None = None,
+        default_desktop: int = 1,
+        parent: QWidget | None = None,
+        installed_apps: list[dict[str, str]] | None = None,
+    ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Edit Application" if entry else "Add Application")
-        self.resize(560, 400)
+        self.setWindowTitle("Edit Workspace App" if entry else "Add App to Workspace")
+        self.setMinimumWidth(520)
+        self.installed_apps = installed_apps
 
         layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        # Quick Pick section (front and center for beginners)
+        pick_box = QGroupBox("1. Choose Application")
+        pick_layout = QVBoxLayout(pick_box)
+        pick_hint = QLabel("Pick an installed app and we'll fill in the technical settings for you:")
+        pick_hint.setWordWrap(True)
+        pick_layout.addWidget(pick_hint)
 
         quick_row = QHBoxLayout()
-        pick_app_btn = QPushButton(QIcon.fromTheme("applications-other"), "Pick Installed App...")
+        pick_app_btn = QPushButton(QIcon.fromTheme("applications-other"), "Choose Installed App...")
         pick_app_btn.clicked.connect(self._pick_installed_app)
-        pick_win_btn = QPushButton(QIcon.fromTheme("window-duplicate"), "Pick Open Window...")
-        pick_win_btn.clicked.connect(self._pick_open_window)
+        browse_btn = QPushButton(QIcon.fromTheme("document-open"), "Choose Custom File / Script...")
+        browse_btn.clicked.connect(self._browse_cmd)
         quick_row.addWidget(pick_app_btn)
-        quick_row.addWidget(pick_win_btn)
-        quick_row.addStretch()
-        layout.addLayout(quick_row)
+        quick_row.addWidget(browse_btn)
+        pick_layout.addLayout(quick_row)
+        layout.addWidget(pick_box)
 
-        form = QFormLayout()
-        self.desktop_spin = QSpinBox()
-        self.desktop_spin.setRange(1, 20)
-        self.desktop_spin.setValue(entry.desktop if entry and entry.desktop > 0 else 1)
-
-        self.close_only_cb = QCheckBox("Close-only target (stop-workspace only, do not launch)")
-        self.close_only_cb.toggled.connect(self._on_close_only_toggled)
-
-        desk_box = QHBoxLayout()
-        desk_box.addWidget(self.desktop_spin)
-        desk_box.addWidget(self.close_only_cb)
-        desk_box.addStretch()
-        form.addRow("Virtual Desktop:", desk_box)
+        # Simple Settings
+        basic_box = QGroupBox("2. Placement & Behavior")
+        form = QFormLayout(basic_box)
 
         self.name_edit = QLineEdit(entry.name if entry else "")
-        self.name_edit.setPlaceholderText("e.g. Firefox or VS Code")
-        form.addRow("Display Name:", self.name_edit)
+        self.name_edit.setPlaceholderText("e.g. Firefox, VS Code, Terminal")
+        form.addRow("App Name:", self.name_edit)
 
-        cmd_row = QHBoxLayout()
+        self.desktop_spin = QSpinBox()
+        self.desktop_spin.setRange(1, 20)
+        self.desktop_spin.setPrefix("Desktop ")
+        self.desktop_spin.setValue(entry.desktop if entry and entry.desktop > 0 else max(1, default_desktop))
+        form.addRow("Open on:", self.desktop_spin)
+
+        self.keep_open_cb = QCheckBox("Keep this app open when clicking Stop Workspace (recommended for terminal)")
+        form.addRow("", self.keep_open_cb)
+        layout.addWidget(basic_box)
+
+        # Collapsible Advanced Settings (hidden by default for beginners)
+        self.adv_toggle = QPushButton("▸ Advanced Settings (Command, Window Matching, Special Flags)")
+        self.adv_toggle.setFlat(True)
+        self.adv_toggle.setCheckable(True)
+        self.adv_toggle.setStyleSheet("text-align: left; font-weight: bold; padding: 4px 0;")
+        self.adv_toggle.toggled.connect(self._toggle_advanced)
+        layout.addWidget(self.adv_toggle)
+
+        self.adv_widget = QWidget()
+        adv_layout = QVBoxLayout(self.adv_widget)
+        adv_layout.setContentsMargins(0, 0, 0, 0)
+
+        adv_form = QFormLayout()
         self.cmd_edit = QLineEdit(entry.cmd if entry else "")
-        self.cmd_edit.setPlaceholderText('e.g. code "/path/to/project" or flatpak run ...')
-        browse_btn = QPushButton("Browse...")
-        browse_btn.clicked.connect(self._browse_cmd)
-        cmd_row.addWidget(self.cmd_edit)
-        cmd_row.addWidget(browse_btn)
-        form.addRow("Launch Command:", cmd_row)
+        self.cmd_edit.setPlaceholderText('e.g. firefox or code "/path/to/project"')
+        adv_form.addRow("Launch Command:", self.cmd_edit)
 
         self.pattern_edit = QLineEdit(entry.pattern if entry else "")
-        self.pattern_edit.setPlaceholderText("Process match for pgrep/pkill (auto-filled if blank)")
-        form.addRow("Process Pattern:", self.pattern_edit)
+        self.pattern_edit.setPlaceholderText("Auto-filled from command if blank")
+        adv_form.addRow("Process Pattern:", self.pattern_edit)
 
+        cls_row = QHBoxLayout()
         self.classes_edit = QLineEdit(entry.classes if entry else "")
-        self.classes_edit.setPlaceholderText("Comma-separated KWin resourceClass/resourceName")
-        form.addRow("KWin Window Classes:", self.classes_edit)
+        self.classes_edit.setPlaceholderText("Auto-filled if blank")
+        pick_win_btn = QPushButton(QIcon.fromTheme("window-duplicate"), "Detect Open Window...")
+        pick_win_btn.clicked.connect(self._pick_open_window)
+        cls_row.addWidget(self.classes_edit)
+        cls_row.addWidget(pick_win_btn)
+        adv_form.addRow("Window Classes:", cls_row)
+        adv_layout.addLayout(adv_form)
 
-        flags_group = QGroupBox("Options")
-        flags_layout = QVBoxLayout(flags_group)
-        self.keep_open_cb = QCheckBox("Keep open on stop-workspace (unless --all is passed)")
-        self.flatpak_cb = QCheckBox("Flatpak app (run 'flatpak kill' on stop)")
-        self.check_cmd_cb = QCheckBox("Only launch if executable/command exists (check_cmd)")
-        self.check_arg1_cb = QCheckBox("Only launch if first file argument exists (check_arg1)")
-        for cb in (self.keep_open_cb, self.flatpak_cb, self.check_cmd_cb, self.check_arg1_cb):
-            flags_layout.addWidget(cb)
-        layout.addLayout(form)
-        layout.addWidget(flags_group)
+        self.close_only_cb = QCheckBox("Close-only rule (do not launch on Start, only close on Stop)")
+        self.close_only_cb.toggled.connect(self._on_close_only_toggled)
+        self.flatpak_cb = QCheckBox("Flatpak app (also run 'flatpak kill' when stopping)")
+        self.check_cmd_cb = QCheckBox("Skip launching if command/file does not exist (check_cmd)")
+        self.check_arg1_cb = QCheckBox("Skip launching if target file argument does not exist (check_arg1)")
+        for cb in (self.close_only_cb, self.flatpak_cb, self.check_cmd_cb, self.check_arg1_cb):
+            adv_layout.addWidget(cb)
+
+        self.adv_widget.setVisible(False)
+        layout.addWidget(self.adv_widget)
 
         if entry:
-            flag_set = {f.strip() for f in entry.flags.split(",") if f.strip()}
-            self.keep_open_cb.setChecked("keep_open" in flag_set)
-            self.flatpak_cb.setChecked("flatpak" in flag_set)
-            self.check_cmd_cb.setChecked("check_cmd" in flag_set)
-            self.check_arg1_cb.setChecked("check_arg1" in flag_set)
-            if "close_only" in flag_set or entry.desktop == 0:
+            fset = entry.flag_set()
+            self.keep_open_cb.setChecked("keep_open" in fset)
+            self.flatpak_cb.setChecked("flatpak" in fset)
+            self.check_cmd_cb.setChecked("check_cmd" in fset)
+            self.check_arg1_cb.setChecked("check_arg1" in fset)
+            if "close_only" in fset or entry.desktop == 0:
                 self.close_only_cb.setChecked(True)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self._validate_and_accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def _toggle_advanced(self, checked: bool) -> None:
+        self.adv_widget.setVisible(checked)
+        self.adv_toggle.setText(
+            ("▾ " if checked else "▸ ") + "Advanced Settings (Command, Window Matching, Special Flags)"
+        )
+        self.adjustSize()
 
     def _on_close_only_toggled(self, checked: bool) -> None:
         self.desktop_spin.setEnabled(not checked)
@@ -504,9 +585,11 @@ class EntryDialog(QDialog):
                 self.name_edit.setText(Path(path).stem)
             if not self.pattern_edit.text().strip():
                 self.pattern_edit.setText(Path(path).name)
+            if not self.classes_edit.text().strip():
+                self.classes_edit.setText(Path(path).name)
 
     def _pick_installed_app(self) -> None:
-        dlg = AppPickerDialog(self)
+        dlg = AppPickerDialog(self, apps=self.installed_apps)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.selected_app:
             app = dlg.selected_app
             self.name_edit.setText(app["name"])
@@ -536,10 +619,14 @@ class EntryDialog(QDialog):
         classes = self.classes_edit.text().strip()
 
         if not name:
-            QMessageBox.warning(self, "Validation", "Display Name cannot be empty.")
+            QMessageBox.warning(self, "Missing App Name", "Please pick an app or enter an App Name.")
             return
         if not self.close_only_cb.isChecked() and not cmd:
-            QMessageBox.warning(self, "Validation", "Launch Command cannot be empty.")
+            QMessageBox.warning(
+                self,
+                "Missing Launch Command",
+                "Please use 'Choose Installed App...' or enter a Launch Command under Advanced Settings.",
+            )
             return
 
         if not pattern and cmd:
@@ -558,7 +645,7 @@ class EntryDialog(QDialog):
 
         for field_name, val in [("Name", name), ("Command", cmd), ("Pattern", pattern), ("Classes", classes)]:
             if "|" in val:
-                QMessageBox.warning(self, "Validation", f"{field_name} cannot contain the '|' character.")
+                QMessageBox.warning(self, "Invalid Character", f"{field_name} cannot contain the '|' character.")
                 return
         self.accept()
 
@@ -592,7 +679,7 @@ class CommandOutputDialog(QDialog):
     def __init__(self, title: str, text: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.resize(680, 420)
+        self.resize(660, 420)
         layout = QVBoxLayout(self)
         box = QPlainTextEdit()
         box.setReadOnly(True)
@@ -607,51 +694,87 @@ class CommandOutputDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Workspace Setup — CachyOS / KDE Plasma")
+        self.setWindowTitle("Workspace Setup")
         self.setWindowIcon(QIcon.fromTheme("preferences-desktop-display"))
-        self.resize(980, 620)
+        self.resize(840, 580)
 
         self.entries: list[WorkspaceEntry] = []
         self.proc: QProcess | None = None
+        self.installed_apps = scan_desktop_apps()
+        self.app_icons = {a["name"].lower(): a["icon"] for a in self.installed_apps if a.get("icon")}
+        self.tab_filters: list[int | None] = [None]
 
         central = QWidget()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
-        root.setSpacing(10)
+        root.setContentsMargins(16, 14, 16, 12)
+        root.setSpacing(12)
 
-        # Header & status bar
+        # Clean header banner
         header_row = QHBoxLayout()
         title_col = QVBoxLayout()
-        title_lbl = QLabel("<b>Workspace Setup</b> — Virtual Desktop Application Manager")
-        title_lbl.setStyleSheet("font-size: 16px;")
-        self.config_lbl = QLabel(f"Config: {CONFIG_FILE}")
-        self.config_lbl.setStyleSheet("color: gray;")
+        title_col.setSpacing(2)
+        title_lbl = QLabel("<b>Workspace Setup</b>")
+        title_lbl.setStyleSheet("font-size: 18px;")
+        subtitle_lbl = QLabel("Choose which apps open automatically on each KDE Virtual Desktop.")
+        subtitle_lbl.setStyleSheet("color: gray;")
         title_col.addWidget(title_lbl)
-        title_col.addWidget(self.config_lbl)
+        title_col.addWidget(subtitle_lbl)
         header_row.addLayout(title_col)
         header_row.addStretch()
 
         self.desktops_lbl = QLabel()
-        self.ensure_desk_btn = QPushButton("Ensure Desktops")
+        self.ensure_desk_btn = QPushButton("Create Missing Desktops")
         self.ensure_desk_btn.clicked.connect(self._ensure_desktops)
         header_row.addWidget(self.desktops_lbl)
         header_row.addWidget(self.ensure_desk_btn)
         root.addLayout(header_row)
 
-        # Quick toggles row
-        toggles_row = QHBoxLayout()
-        self.autostart_cb = QCheckBox("Start workspace automatically on login")
+        # Simple quick-toggle strip
+        card = QFrame()
+        card.setFrameShape(QFrame.Shape.StyledPanel)
+        card_row = QHBoxLayout(card)
+        card_row.setContentsMargins(10, 8, 10, 8)
+
+        self.autostart_cb = QCheckBox("Start workspace automatically when I log in")
         self.autostart_cb.setChecked(AUTOSTART_FILE.exists())
         self.autostart_cb.toggled.connect(self._toggle_autostart)
-        toggles_row.addWidget(self.autostart_cb)
-        toggles_row.addStretch()
+        card_row.addWidget(self.autostart_cb)
+        card_row.addStretch()
 
-        self.install_btn = QPushButton(QIcon.fromTheme("system-software-install"), "Install CLI & App Menu Shortcut")
+        self.install_btn = QPushButton(QIcon.fromTheme("system-software-install"), "")
         self.install_btn.clicked.connect(self._install_cli)
-        toggles_row.addWidget(self.install_btn)
-        root.addLayout(toggles_row)
+        card_row.addWidget(self.install_btn)
+        root.addWidget(card)
 
-        # Table toolbar
+        # Desktop filter tabs + Action row
+        filter_row = QHBoxLayout()
+        self.tab_bar = QTabBar()
+        self.tab_bar.setExpanding(False)
+        self.tab_bar.currentChanged.connect(lambda _: self._populate_table())
+        filter_row.addWidget(self.tab_bar)
+        filter_row.addStretch()
+
+        self.tech_cols_cb = QCheckBox("Show technical details")
+        self.tech_cols_cb.toggled.connect(self._toggle_technical_columns)
+        filter_row.addWidget(self.tech_cols_cb)
+        root.addLayout(filter_row)
+
+        # Clean App Table
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["Desktop", "Application", "Behavior", "Command", "Window Classes"])
+        self.table.setIconSize(QSize(22, 22))
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(34)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_context_menu)
+        self.table.doubleClicked.connect(self._edit_selected)
+        root.addWidget(self.table)
+
+        # Table action buttons
         tb = QHBoxLayout()
         add_btn = QPushButton(QIcon.fromTheme("list-add"), "Add App")
         add_btn.clicked.connect(self._add_entry)
@@ -659,86 +782,163 @@ class MainWindow(QMainWindow):
         edit_btn.clicked.connect(self._edit_selected)
         remove_btn = QPushButton(QIcon.fromTheme("list-remove"), "Remove")
         remove_btn.clicked.connect(self._remove_selected)
-        up_btn = QPushButton(QIcon.fromTheme("go-up"), "Up")
-        up_btn.clicked.connect(lambda: self._move_selected(-1))
-        down_btn = QPushButton(QIcon.fromTheme("go-down"), "Down")
-        down_btn.clicked.connect(lambda: self._move_selected(1))
+        self.up_btn = QPushButton(QIcon.fromTheme("go-up"), "Move Up")
+        self.up_btn.clicked.connect(lambda: self._move_selected(-1))
+        self.down_btn = QPushButton(QIcon.fromTheme("go-down"), "Move Down")
+        self.down_btn.clicked.connect(lambda: self._move_selected(1))
 
-        preset_btn = QPushButton(QIcon.fromTheme("view-refresh"), "Load Preset")
-        preset_menu = QMenu(preset_btn)
-        preset_menu.addAction("Auto-detect installed apps (Recommended)", lambda: self._apply_preset("auto"))
-        preset_menu.addAction("Minimal starter template", lambda: self._apply_preset("minimal"))
-        preset_menu.addAction("Original personal setup", lambda: self._apply_preset("personal"))
-        preset_btn.setMenu(preset_menu)
-
-        for b in (add_btn, edit_btn, remove_btn, up_btn, down_btn):
+        for b in (add_btn, edit_btn, remove_btn):
             tb.addWidget(b)
         tb.addStretch()
-        tb.addWidget(preset_btn)
+        tb.addWidget(self.up_btn)
+        tb.addWidget(self.down_btn)
         root.addLayout(tb)
 
-        # Main table
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(
-            ["Desktop", "Application", "Launch Command", "KWin Classes", "Flags", "Pattern"]
-        )
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.table.doubleClicked.connect(self._edit_selected)
-        root.addWidget(self.table)
-
-        # Bottom action bar
+        # Clean Bottom Bar (Tools menu + Start / Stop)
         bottom = QHBoxLayout()
-        doctor_btn = QPushButton(QIcon.fromTheme("dialog-information"), "System Check (Doctor)")
-        doctor_btn.clicked.connect(self._run_doctor)
-        win_btn = QPushButton(QIcon.fromTheme("window-duplicate"), "Inspect Open Windows")
-        win_btn.clicked.connect(self._inspect_windows)
+        tools_btn = QToolButton()
+        tools_btn.setText("Tools")
+        tools_btn.setIcon(QIcon.fromTheme("configure"))
+        tools_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        tools_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
 
-        start_btn = QPushButton(QIcon.fromTheme("media-playback-start"), "Launch Workspace")
-        start_btn.clicked.connect(lambda: self._run_async([str(START_CLI)], "Launching Workspace"))
+        tools_menu = QMenu(tools_btn)
+        preset_menu = tools_menu.addMenu(QIcon.fromTheme("view-refresh"), "Reset with Preset")
+        preset_menu.addAction("Auto-detect my installed apps (Recommended)", lambda: self._apply_preset("auto"))
+        preset_menu.addAction("Minimal starter setup", lambda: self._apply_preset("minimal"))
+        preset_menu.addAction("Default CachyOS setup", lambda: self._apply_preset("personal"))
+        tools_menu.addAction(QIcon.fromTheme("dialog-information"), "Check System Health (Doctor)", self._run_doctor)
+        tools_menu.addAction(QIcon.fromTheme("window-duplicate"), "Inspect Open Windows", self._inspect_windows)
+        tools_menu.addAction(QIcon.fromTheme("folder-open"), "Open Config Folder", self._open_config_folder)
+        tools_menu.addSeparator()
+        tools_menu.addAction(QIcon.fromTheme("edit-delete"), "Remove Start Menu & Terminal Shortcuts", self._uninstall_cli)
+        tools_btn.setMenu(tools_menu)
+
+        start_btn = QPushButton(QIcon.fromTheme("media-playback-start"), "Start Workspace")
+        start_btn.setMinimumHeight(34)
+        start_btn.clicked.connect(lambda: self._run_async([str(START_CLI)], "Starting Workspace"))
+
         stop_btn = QPushButton(QIcon.fromTheme("media-playback-stop"), "Stop Workspace")
+        stop_btn.setMinimumHeight(34)
         stop_btn.clicked.connect(lambda: self._run_async([str(STOP_CLI)], "Stopping Workspace"))
 
-        bottom.addWidget(doctor_btn)
-        bottom.addWidget(win_btn)
+        bottom.addWidget(tools_btn)
         bottom.addStretch()
-        bottom.addWidget(start_btn)
         bottom.addWidget(stop_btn)
+        bottom.addWidget(start_btn)
         root.addLayout(bottom)
 
         if not CONFIG_FILE.exists() and SETUP_CLI.exists():
             subprocess.run([str(SETUP_CLI), "init", "--preset", "auto"], check=False)
 
+        self._toggle_technical_columns(False)
         self._reload()
+
+    def _toggle_technical_columns(self, show: bool) -> None:
+        self.table.setColumnHidden(3, not show)
+        self.table.setColumnHidden(4, not show)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+
+    def _rebuild_tabs(self) -> None:
+        current_filter = self._current_filter()
+        self.tab_bar.blockSignals(True)
+        while self.tab_bar.count() > 0:
+            self.tab_bar.removeTab(0)
+
+        desktop_nums = sorted({e.desktop for e in self.entries if e.desktop > 0})
+        for d in (1, 2, 3):
+            if d not in desktop_nums:
+                desktop_nums.append(d)
+        desktop_nums = sorted(desktop_nums)
+
+        self.tab_filters = [None]
+        self.tab_bar.addTab(f"All ({len(self.entries)})")
+
+        for d in desktop_nums:
+            cnt = sum(1 for e in self.entries if e.desktop == d)
+            self.tab_filters.append(d)
+            self.tab_bar.addTab(f"Desktop {d} ({cnt})")
+
+        if any(e.desktop == 0 for e in self.entries):
+            cnt = sum(1 for e in self.entries if e.desktop == 0)
+            self.tab_filters.append(0)
+            self.tab_bar.addTab(f"Stop Only ({cnt})")
+
+        idx = self.tab_filters.index(current_filter) if current_filter in self.tab_filters else 0
+        self.tab_bar.setCurrentIndex(idx)
+        self.tab_bar.blockSignals(False)
+
+    def _current_filter(self) -> int | None:
+        idx = self.tab_bar.currentIndex()
+        if 0 <= idx < len(self.tab_filters):
+            return self.tab_filters[idx]
+        return None
 
     def _reload(self) -> None:
         self.entries = parse_config()
+        self._rebuild_tabs()
+        self._populate_table()
+        self._update_desktop_status()
+        self._update_install_button()
+
+    def _populate_table(self) -> None:
+        filt = self._current_filter()
         self.table.setRowCount(0)
-        for entry in self.entries:
+        for real_idx, entry in enumerate(self.entries):
+            if filt is not None and entry.desktop != filt:
+                continue
             r = self.table.rowCount()
             self.table.insertRow(r)
             desk_str = "Stop Only" if entry.desktop == 0 else f"Desktop {entry.desktop}"
-            vals = [desk_str, entry.name, entry.cmd or "-", entry.classes or "-", entry.flags or "-", entry.pattern]
-            for c, val in enumerate(vals):
-                self.table.setItem(r, c, QTableWidgetItem(val))
-        self.table.resizeColumnsToContents()
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self._update_desktop_status()
+            desk_item = QTableWidgetItem(desk_str)
+            desk_item.setData(Qt.ItemDataRole.UserRole, real_idx)
+
+            app_item = QTableWidgetItem(resolve_entry_icon(entry, self.app_icons), entry.name)
+            if entry.cmd:
+                app_item.setToolTip(f"Command: {entry.cmd}")
+
+            beh_item = QTableWidgetItem(entry.behavior_summary())
+            cmd_item = QTableWidgetItem(entry.cmd or "-")
+            cls_item = QTableWidgetItem(entry.classes or "-")
+
+            for c, item in enumerate((desk_item, app_item, beh_item, cmd_item, cls_item)):
+                self.table.setItem(r, c, item)
+
+        self.table.resizeColumnToContents(0)
+        self.table.resizeColumnToContents(1)
+        is_all = filt is None
+        self.up_btn.setEnabled(is_all)
+        self.down_btn.setEnabled(is_all)
+
+    def _selected_real_index(self) -> int | None:
+        row = self.table.currentRow()
+        if row < 0:
+            return None
+        item = self.table.item(row, 0)
+        if not item:
+            return None
+        idx = item.data(Qt.ItemDataRole.UserRole)
+        return idx if isinstance(idx, int) and 0 <= idx < len(self.entries) else None
 
     def _update_desktop_status(self) -> None:
         current = query_kwin_desktop_count()
         max_cfg = max((e.desktop for e in self.entries if e.desktop > 0), default=1)
         if current is None:
-            self.desktops_lbl.setText("KDE Virtual Desktops: N/A")
-            self.ensure_desk_btn.setEnabled(False)
+            self.desktops_lbl.setText("KDE Plasma not detected")
+            self.ensure_desk_btn.setVisible(False)
         elif current < max_cfg:
-            self.desktops_lbl.setText(f"KDE Virtual Desktops: {current} (need {max_cfg})")
-            self.ensure_desk_btn.setEnabled(True)
+            self.desktops_lbl.setText(f"⚠ {current} Virtual Desktops (need {max_cfg})")
+            self.ensure_desk_btn.setVisible(True)
         else:
-            self.desktops_lbl.setText(f"KDE Virtual Desktops: {current} (OK)")
-            self.ensure_desk_btn.setEnabled(False)
+            self.desktops_lbl.setText(f"✓ {current} Virtual Desktops ready")
+            self.ensure_desk_btn.setVisible(False)
+
+    def _update_install_button(self) -> None:
+        if LAUNCHER_FILE.exists():
+            self.install_btn.setText("✓ In Start Menu (Update)")
+        else:
+            self.install_btn.setText("Add to Start Menu & Terminal")
 
     def _persist(self, message: str) -> None:
         save_config(self.entries)
@@ -746,59 +946,81 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(message, 4000)
 
     def _add_entry(self) -> None:
-        dlg = EntryDialog(parent=self)
+        filt = self._current_filter()
+        default_desk = filt if filt and filt > 0 else 1
+        dlg = EntryDialog(default_desktop=default_desk, parent=self, installed_apps=self.installed_apps)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             entry = dlg.build_entry()
             self.entries.append(entry)
-            self._persist(f"Added '{entry.name}' to configuration.")
+            self._persist(f"Added '{entry.name}' to Desktop {entry.desktop}.")
 
     def _edit_selected(self) -> None:
-        row = self.table.currentRow()
-        if row < 0:
-            QMessageBox.information(self, "Edit", "Please select an application row first.")
+        real_idx = self._selected_real_index()
+        if real_idx is None:
+            QMessageBox.information(self, "Edit App", "Please select an application first.")
             return
-        # snapshot index before any reload
-        entry = self.entries[row] if row < len(self.entries) else None
-        if entry is None:
-            return
-        dlg = EntryDialog(entry, parent=self)
+        cur_row = self.table.currentRow()
+        dlg = EntryDialog(self.entries[real_idx], parent=self, installed_apps=self.installed_apps)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            self.entries[row] = dlg.build_entry()
-            self._persist(f"Updated '{self.entries[row].name}'.")
-            self.table.selectRow(min(row, self.table.rowCount() - 1))
+            self.entries[real_idx] = dlg.build_entry()
+            self._persist(f"Updated '{self.entries[real_idx].name}'.")
+            if self.table.rowCount() > 0:
+                self.table.selectRow(min(cur_row, self.table.rowCount() - 1))
 
     def _remove_selected(self) -> None:
-        row = self.table.currentRow()
-        if row < 0:
-            QMessageBox.information(self, "Remove", "Please select an application row first.")
+        real_idx = self._selected_real_index()
+        if real_idx is None:
+            QMessageBox.information(self, "Remove App", "Please select an application first.")
             return
-        entry = self.entries[row] if row < len(self.entries) else None
-        if entry is None:
-            return
-        name = entry.name
-        ans = QMessageBox.question(self, "Confirm Removal", f"Remove '{name}' from workspace configuration?")
+        cur_row = self.table.currentRow()
+        name = self.entries[real_idx].name
+        ans = QMessageBox.question(self, "Remove App", f"Remove '{name}' from your workspace?")
         if ans == QMessageBox.StandardButton.Yes:
-            del self.entries[row]
+            del self.entries[real_idx]
             self._persist(f"Removed '{name}'.")
-            # Keep selection on same row (or last row if we deleted the last)
-            new_row = min(row, self.table.rowCount() - 1)
-            if new_row >= 0:
-                self.table.selectRow(new_row)
+            if self.table.rowCount() > 0:
+                self.table.selectRow(min(cur_row, self.table.rowCount() - 1))
 
     def _move_selected(self, delta: int) -> None:
+        if self._current_filter() is not None:
+            return
         row = self.table.currentRow()
         new_row = row + delta
         if row < 0 or new_row < 0 or new_row >= len(self.entries):
             return
         self.entries[row], self.entries[new_row] = self.entries[new_row], self.entries[row]
-        self._persist("Reordered entries.")
+        self._persist("Updated launch order.")
         self.table.selectRow(new_row)
+
+    def _show_context_menu(self, pos) -> None:
+        real_idx = self._selected_real_index()
+        if real_idx is None:
+            return
+        menu = QMenu(self)
+        menu.addAction(QIcon.fromTheme("document-edit"), "Edit...", self._edit_selected)
+        move_menu = menu.addMenu("Move to Desktop")
+        for d in (1, 2, 3, 4):
+            act = QAction(f"Desktop {d}", self)
+            act.triggered.connect(lambda _=False, desk=d, idx=real_idx: self._move_to_desktop(idx, desk))
+            move_menu.addAction(act)
+        menu.addSeparator()
+        menu.addAction(QIcon.fromTheme("list-remove"), "Remove", self._remove_selected)
+        menu.exec(self.table.viewport().mapToGlobal(pos))
+
+    def _move_to_desktop(self, real_idx: int, desk: int) -> None:
+        if not (0 <= real_idx < len(self.entries)):
+            return
+        entry = self.entries[real_idx]
+        entry.desktop = desk
+        fset = entry.flag_set() - {"close_only"}
+        entry.flags = ",".join(sorted(fset))
+        self._persist(f"Moved '{entry.name}' to Desktop {desk}.")
 
     def _apply_preset(self, preset: str) -> None:
         ans = QMessageBox.question(
             self,
-            "Load Preset",
-            f"Overwrite {CONFIG_FILE} using the '{preset}' preset?",
+            "Reset with Preset",
+            f"Replace your current workspace list using the '{preset}' preset?",
         )
         if ans != QMessageBox.StandardButton.Yes:
             return
@@ -832,21 +1054,37 @@ class MainWindow(QMainWindow):
 
     def _install_cli(self) -> None:
         res = subprocess.run([str(SETUP_CLI), "install"], capture_output=True, text=True, check=False)
-        msg = (res.stdout + "\n" + res.stderr).strip()
+        self._update_install_button()
         if res.returncode == 0:
-            QMessageBox.information(self, "Install Complete", msg)
+            QMessageBox.information(
+                self,
+                "Added to Start Menu & Terminal",
+                "Workspace Setup is now in your KDE Application Launcher, and terminal commands are linked in ~/.local/bin.",
+            )
         else:
-            QMessageBox.warning(self, "Install Error", msg)
+            QMessageBox.warning(self, "Install Error", (res.stdout + "\n" + res.stderr).strip())
+
+    def _uninstall_cli(self) -> None:
+        res = subprocess.run([str(SETUP_CLI), "uninstall"], capture_output=True, text=True, check=False)
+        self._update_install_button()
+        if res.returncode == 0:
+            self.statusBar().showMessage("Removed Start Menu & terminal shortcuts.", 4000)
+        else:
+            QMessageBox.warning(self, "Uninstall Error", (res.stdout + "\n" + res.stderr).strip())
 
     def _run_doctor(self) -> None:
         env = os.environ.copy()
         env["NO_COLOR"] = "1"
         res = subprocess.run([str(SETUP_CLI), "doctor"], capture_output=True, text=True, env=env, check=False)
         clean = re.sub(r"\x1b\[[0-9;]*m", "", res.stdout + res.stderr)
-        CommandOutputDialog("System Check (Doctor)", clean, self).exec()
+        CommandOutputDialog("System Health Check", clean, self).exec()
 
     def _inspect_windows(self) -> None:
         OpenWindowPickerDialog(self).exec()
+
+    def _open_config_folder(self) -> None:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(CONFIG_DIR)))
 
     def _run_async(self, cmd: list[str], label: str) -> None:
         if self.proc and self.proc.state() != QProcess.ProcessState.NotRunning:
@@ -859,7 +1097,6 @@ class MainWindow(QMainWindow):
         self.proc.start(cmd[0], cmd[1:])
 
     def _on_proc_finished(self, label: str, code: int) -> None:
-        # MergedChannels sends all output to stdout channel; readAll() reads whatever is buffered
         output = bytes(self.proc.readAll()).decode("utf-8", errors="ignore") if self.proc else ""
         if code == 0:
             self.statusBar().showMessage(f"{label}: done.", 4000)
