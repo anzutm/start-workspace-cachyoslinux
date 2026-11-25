@@ -11,10 +11,12 @@ SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/start-workspace"
 CONFIG_FILE="$CONFIG_DIR/workspace.conf"
 BIN_DIR="${HOME}/.local/bin"
+APPS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+DESKTOP_LAUNCHER="$APPS_DIR/start-workspace-setup.desktop"
 AUTOSTART_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"
 AUTOSTART_FILE="$AUTOSTART_DIR/start-workspace.desktop"
 
-MANAGED_SCRIPTS=("start-workspace" "stop-workspace" "setup-workspace")
+MANAGED_SCRIPTS=("start-workspace" "stop-workspace" "setup-workspace" "setup-workspace-gui")
 
 # Colors (disabled automatically when not a TTY)
 if [ -t 1 ]; then
@@ -42,6 +44,7 @@ Configure and manage start-workspace / stop-workspace from the terminal.
 Run without arguments to open the interactive terminal menu.
 
 Commands:
+  gui                    Launch the PyQt6 graphical setup window (setup-workspace-gui)
   init [--preset MODE] [--force]
                          Create workspace.conf (~/.config/start-workspace/workspace.conf)
                          Presets: auto (default, detects installed apps), minimal, personal
@@ -50,8 +53,8 @@ Commands:
   edit [INDEX] [OPTIONS] Edit an existing entry by its list number
   remove [INDEX]         Remove an application entry by its list number
   windows [--pick]       List open KWin windows with resourceClass/resourceName (--pick to click)
-  install                Symlink scripts into ~/.local/bin and check $PATH
-  uninstall              Remove script symlinks from ~/.local/bin
+  install                Symlink scripts into ~/.local/bin & add KDE App Launcher entry
+  uninstall              Remove script symlinks & App Launcher entry
   autostart [STATE]      Manage login autostart: status (default), enable, disable
   doctor                 Check dependencies, KWin D-Bus, Virtual Desktops, and app paths
   ensure-desktops        Create KDE Virtual Desktops to match the highest configured desktop
@@ -698,8 +701,22 @@ PYEOF
     fi
 }
 
+cmd_gui() {
+    local gui_bin="$SCRIPT_DIR/setup-workspace-gui"
+    if [ ! -f "$gui_bin" ]; then
+        err "GUI script not found: $gui_bin"
+        return 1
+    fi
+    if ! command -v python3 >/dev/null 2>&1 || ! python3 -c "import PyQt6.QtWidgets" >/dev/null 2>&1; then
+        err "PyQt6 is required for the GUI (install with: sudo pacman -S python-pyqt6)."
+        return 1
+    fi
+    chmod +x "$gui_bin"
+    exec "$gui_bin" "$@"
+}
+
 cmd_install() {
-    mkdir -p "$BIN_DIR"
+    mkdir -p "$BIN_DIR" "$APPS_DIR"
     for s in "${MANAGED_SCRIPTS[@]}"; do
         local src="$SCRIPT_DIR/$s"
         local dst="$BIN_DIR/$s"
@@ -711,6 +728,18 @@ cmd_install() {
         ln -sf "$src" "$dst"
         success "Linked $dst -> $src"
     done
+
+    cat > "$DESKTOP_LAUNCHER" << EOF
+[Desktop Entry]
+Type=Application
+Name=Workspace Setup
+Comment=Configure workspace applications across KDE Virtual Desktops
+Exec=$BIN_DIR/setup-workspace-gui
+Icon=preferences-desktop-display
+Terminal=false
+Categories=Settings;System;Qt;KDE;
+EOF
+    success "Created Application Launcher shortcut: $DESKTOP_LAUNCHER"
 
     case ":$PATH:" in
         *":$BIN_DIR:"*)
@@ -734,8 +763,13 @@ cmd_uninstall() {
             removed=$((removed + 1))
         fi
     done
+    if [ -f "$DESKTOP_LAUNCHER" ]; then
+        rm -f "$DESKTOP_LAUNCHER"
+        success "Removed $DESKTOP_LAUNCHER"
+        removed=$((removed + 1))
+    fi
     if [ "$removed" -eq 0 ]; then
-        info "No installed symlinks found in $BIN_DIR."
+        info "No installed symlinks or launcher entries found."
     fi
 }
 
@@ -959,21 +993,22 @@ interactive_menu() {
         printf "\n${BOLD}=== Workspace Setup (Terminal Menu) ===${RESET}\n"
         printf "Config: ${DIM}%s${RESET}\n\n" "$CONFIG_FILE"
         echo "  1) Quick setup (auto-detect apps + install to ~/.local/bin + check system)"
-        echo "  2) List configured workspace apps"
-        echo "  3) Add a new app to workspace"
-        echo "  4) Edit an existing app"
-        echo "  5) Remove an app from workspace"
-        echo "  6) Inspect open KWin windows (find resourceClass / resourceName)"
-        echo "  7) Check dependencies & environment (doctor)"
-        echo "  8) Ensure KDE Virtual Desktops match config"
-        echo "  9) Toggle login autostart (enable / disable)"
-        echo " 10) Install / Update CLI commands (~/.local/bin)"
-        echo " 11) Uninstall CLI commands (~/.local/bin)"
-        echo " 12) Reset configuration to defaults"
-        echo " 13) Run start-workspace now"
+        echo "  2) Open GUI Setup (PyQt6)"
+        echo "  3) List configured workspace apps"
+        echo "  4) Add a new app to workspace"
+        echo "  5) Edit an existing app"
+        echo "  6) Remove an app from workspace"
+        echo "  7) Inspect open KWin windows (find resourceClass / resourceName)"
+        echo "  8) Check dependencies & environment (doctor)"
+        echo "  9) Ensure KDE Virtual Desktops match config"
+        echo " 10) Toggle login autostart (enable / disable)"
+        echo " 11) Install / Update CLI & App Menu (~/.local/bin)"
+        echo " 12) Uninstall CLI & App Menu (~/.local/bin)"
+        echo " 13) Reset configuration to defaults"
+        echo " 14) Run start-workspace now"
         echo "  0) Exit"
         echo ""
-        read -r -p "Choose an option [0-13]: " choice
+        read -r -p "Choose an option [0-14]: " choice
 
         case "$choice" in
             1)
@@ -981,24 +1016,25 @@ interactive_menu() {
                 cmd_install
                 cmd_doctor
                 ;;
-            2) cmd_list ;;
-            3) cmd_add ;;
-            4) cmd_edit ;;
-            5) cmd_remove ;;
-            6) cmd_windows ;;
-            7) cmd_doctor ;;
-            8) cmd_ensure_desktops ;;
-            9)
+            2) cmd_gui ;;
+            3) cmd_list ;;
+            4) cmd_add ;;
+            5) cmd_edit ;;
+            6) cmd_remove ;;
+            7) cmd_windows ;;
+            8) cmd_doctor ;;
+            9) cmd_ensure_desktops ;;
+            10)
                 if [ -f "$AUTOSTART_FILE" ]; then
                     cmd_autostart disable
                 else
                     cmd_autostart enable
                 fi
                 ;;
-            10) cmd_install ;;
-            11) cmd_uninstall ;;
-            12) cmd_reset ;;
-            13) "$SCRIPT_DIR/start-workspace" ;;
+            11) cmd_install ;;
+            12) cmd_uninstall ;;
+            13) cmd_reset ;;
+            14) "$SCRIPT_DIR/start-workspace" ;;
             0|q|Q)
                 info "Bye!"
                 return 0
@@ -1020,6 +1056,7 @@ subcmd="$1"
 shift
 
 case "$subcmd" in
+    gui)             cmd_gui "$@" ;;
     init)            cmd_init "$@" ;;
     list)            cmd_list "$@" ;;
     add)             cmd_add "$@" ;;

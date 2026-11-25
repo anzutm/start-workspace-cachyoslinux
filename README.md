@@ -1,10 +1,11 @@
 # Start Workspace — CachyOS / KDE Plasma
 
-Bash scripts to set up (`setup-workspace`), automatically launch (`start-workspace`), and stop (`stop-workspace`) a daily multi-desktop workspace on **CachyOS** with **KDE Plasma 6 (Wayland)**, complete with automatic window placement across Virtual Desktops using **KWin Scripting** via `qdbus6`.
+GUI and Bash scripts to set up (`setup-workspace-gui` / `setup-workspace`), automatically launch (`start-workspace`), and stop (`stop-workspace`) a daily multi-desktop workspace on **CachyOS** with **KDE Plasma 6 (Wayland)**, complete with automatic window placement across Virtual Desktops using **KWin Scripting** via `qdbus6`.
 
 ## Features
 
-- **Terminal Setup Wizard & CLI (`setup-workspace`)**: auto-detects installed apps (`init --preset auto|minimal|personal`), lets you add/edit/remove apps, inspects live KWin window classes (`windows`), manages login autostart, installs CLI symlinks to `~/.local/bin`, checks system dependencies (`doctor`), and creates missing KDE Virtual Desktops.
+- **Native KDE Plasma / PyQt6 GUI (`setup-workspace-gui`)**: visually add, edit, remove, and reorder apps, **pick installed apps** from your system menu, **pick open KWin windows** to auto-fill `resourceClass`, toggle login autostart, load presets, and test launching/stopping your workspace.
+- **Terminal Setup Wizard & CLI (`setup-workspace`)**: auto-detects installed apps (`init --preset auto|minimal|personal`), manages entries from the terminal, installs CLI & App Launcher shortcuts, checks system dependencies (`doctor`), and creates missing KDE Virtual Desktops.
 - **Idempotent launching**: checks running processes with `pgrep -f` so already-open applications are not launched again.
 - **Wayland-native window placement**: uses KWin Scripting (`org.kde.kwin.Scripting`) to move windows to their assigned Virtual Desktops by `resourceClass` / `resourceName`, then switches focus back to Desktop 1.
 - **Graceful & forced shutdown**: `stop-workspace` first closes windows cleanly via `c.closeWindow()` in KWin, then terminates any remaining background processes (or force-kills them with `-f`/`--force`).
@@ -12,7 +13,7 @@ Bash scripts to set up (`setup-workspace`), automatically launch (`start-workspa
 
 ## Default Virtual Desktop Layout
 
-Make sure KDE Plasma has at least **3 Virtual Desktops** configured (or run `./setup-workspace ensure-desktops`). When initialized with the default `auto` preset, `setup-workspace` detects which editors, terminals, file managers, browsers, and utilities are installed on your system:
+Make sure KDE Plasma has at least **3 Virtual Desktops** configured (or click **Ensure Desktops** in the GUI / run `./setup-workspace ensure-desktops`). When initialized with the default `auto` preset, setup detects which editors, terminals, file managers, browsers, and utilities are installed on your system:
 
 | Desktop | Category | Example Apps |
 | :--- | :--- | :--- |
@@ -26,30 +27,38 @@ Make sure KDE Plasma has at least **3 Virtual Desktops** configured (or run `./s
 - **System utilities**:
   - `bash`, `pgrep` / `pkill` (`procps-ng`)
   - `qdbus6` (`qt6-tools`) for KWin Scripting and Virtual Desktop management
+  - `python-pyqt6` (for the `setup-workspace-gui` desktop interface)
+  - `python-gobject` (optional, for listing open KWin windows; otherwise falls back to click-to-pick)
   - `notify-send` (`libnotify`, optional for desktop notifications)
-  - `python3` with PyGObject (`python-gobject`, optional for listing open KWin windows via `setup-workspace windows`; otherwise falls back to click-to-pick)
   - `flatpak` (optional, for Flatpak apps)
 
-## Installation & Terminal Setup
+## Installation & Setup
 
-Clone this repository and run `setup-workspace`:
+Clone this repository and open the GUI (or install it into your KDE Application Launcher):
 
 ```bash
 git clone https://github.com/anzutm/start-workspace-cachyoslinux.git
 cd start-workspace-cachyoslinux
-chmod +x setup-workspace start-workspace stop-workspace
-./setup-workspace
+chmod +x setup-workspace setup-workspace-gui start-workspace stop-workspace
+./setup-workspace gui
 ```
 
-Or run the one-step setup commands directly:
+To install the CLI commands into `~/.local/bin` **and** add **Workspace Setup** to your KDE Plasma Application Launcher:
 
 ```bash
-./setup-workspace init       # Auto-detect installed apps -> ~/.config/start-workspace/workspace.conf
-./setup-workspace install    # Symlink scripts into ~/.local/bin
-./setup-workspace doctor     # Check tools, KWin, Virtual Desktops, and app paths
+./setup-workspace install
 ```
 
 ## Usage
+
+### GUI Setup (`setup-workspace-gui`)
+
+Launch the graphical manager with `./setup-workspace gui` (or `./setup-workspace-gui`, or search **Workspace Setup** in your application launcher after running `install`):
+
+- **Add App → Pick Installed App...**: pick any installed app from your system menu to auto-fill Name, Command, Process Pattern, and KWin Window Classes.
+- **Add App → Pick Open Window...**: click an already-open window to grab its exact Wayland `resourceClass` / `resourceName` and Virtual Desktop.
+- **Load Preset**: switch between `auto` (system-detected apps), `minimal`, or `personal`.
+- **Start workspace automatically on login**: one-click KDE autostart toggle.
 
 ### Terminal Setup (`setup-workspace`)
 
@@ -57,7 +66,8 @@ Run `./setup-workspace` with no arguments to open the interactive terminal menu,
 
 | Command | Description |
 | :--- | :--- |
-| `setup-workspace` | Open interactive setup menu |
+| `setup-workspace gui` | Launch the PyQt6 graphical setup window |
+| `setup-workspace` | Open interactive terminal menu |
 | `setup-workspace init [--preset auto\|minimal\|personal] [--force]` | Create `workspace.conf` (default preset: `auto`) |
 | `setup-workspace list` | List all configured apps per desktop |
 | `setup-workspace add [OPTIONS]` | Add an app (interactive or via flags) |
@@ -65,8 +75,8 @@ Run `./setup-workspace` with no arguments to open the interactive terminal menu,
 | `setup-workspace remove [INDEX]` | Remove an app entry by number |
 | `setup-workspace windows [--pick]` | Inspect open KWin windows (`resourceClass` / `resourceName`) |
 | `setup-workspace autostart [status\|enable\|disable]` | Enable or disable KDE login autostart |
-| `setup-workspace install` | Symlink scripts into `~/.local/bin` |
-| `setup-workspace uninstall` | Remove symlinks from `~/.local/bin` |
+| `setup-workspace install` | Symlink scripts into `~/.local/bin` & add App Launcher entry |
+| `setup-workspace uninstall` | Remove symlinks & App Launcher entry |
 | `setup-workspace doctor` | Verify dependencies, KWin D-Bus, and paths |
 | `setup-workspace ensure-desktops` | Create KDE Virtual Desktops to match config |
 | `setup-workspace reset [--preset ...] [--yes]` | Reset `workspace.conf` using a preset |
