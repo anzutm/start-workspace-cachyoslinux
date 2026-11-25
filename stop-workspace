@@ -34,17 +34,111 @@ done
 
 echo "[*] Stopping Workspace..."
 
-# Helper to terminate background processes
+# Return PIDs matching proc_pattern, excluding system/mount helpers (e.g. psd fuse-overlayfs)
+# and unrelated commands whose arguments merely mention the pattern.
+find_matching_pids() {
+    local pattern="$1"
+    [ -z "$pattern" ] && return 0
+
+    local uid
+    uid="$(id -u)"
+
+    local is_regex=false
+    case "$pattern" in
+        *[[:space:]]*|*'|'*|*'^'*|*'$'*|*'\\'*|*'*'*|*'+'*|*'?'*|*'('*|*')'*|*'['*|*']'*|*'{'*|*'}'*)
+            is_regex=true
+            ;;
+    esac
+
+    local pat_short="${pattern:0:15}"
+    local pid
+    while IFS= read -r pid; do
+        [ -z "$pid" ] && continue
+        [ "$pid" = "$$" ] || [ "$pid" = "${BASHPID:-$$}" ] && continue
+        [ -r "/proc/$pid/comm" ] || continue
+
+        local comm exe_path exe_base
+        IFS= read -r comm < "/proc/$pid/comm" || continue
+        exe_path="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
+        exe_base="${exe_path##*/}"
+
+        case "$comm" in
+            fuse-overlayfs|fusermount|fusermount3|profile-sync-da|systemd|pgrep|pkill|start-workspace|stop-workspace|setup-workspace)
+                continue
+                ;;
+        esac
+        case "$exe_base" in
+            fuse-overlayfs|fusermount|fusermount3|profile-sync-daemon|systemd|pgrep|pkill|start-workspace|stop-workspace|setup-workspace)
+                continue
+                ;;
+        esac
+
+        local argv=()
+        mapfile -d '' -t argv < "/proc/$pid/cmdline" 2>/dev/null || true
+        local arg0="${argv[0]:-}"
+        local arg0_base="${arg0##*/}"
+        arg0_base="${arg0_base##*\\}"
+        local arg1_base="${argv[1]:-}"
+        arg1_base="${arg1_base##*/}"
+
+        case "$arg0_base" in
+            start-workspace|stop-workspace|setup-workspace|setup-workspace-gui)
+                continue
+                ;;
+        esac
+        case "$arg1_base" in
+            start-workspace|stop-workspace|setup-workspace|setup-workspace-gui)
+                continue
+                ;;
+        esac
+
+        if [ "$is_regex" = true ]; then
+            echo "$pid"
+            continue
+        fi
+
+        if [ "$comm" = "$pat_short" ] || [ "$exe_base" = "$pattern" ] || [ "$exe_path" = "$pattern" ] || [ "$arg0_base" = "$pattern" ] || [ "$arg0" = "$pattern" ]; then
+            echo "$pid"
+            continue
+        fi
+
+        case "$exe_base" in
+            sh|bash|dash|zsh|python|python3*|node|nodejs|electron*|flatpak|bwrap|wine*|proton*|env)
+                local i
+                for ((i = 1; i < ${#argv[@]}; i++)); do
+                    local a="${argv[i]}"
+                    local a_base="${a##*/}"
+                    a_base="${a_base##*\\}"
+                    if [ "$a" = "$pattern" ] || [ "$a_base" = "$pattern" ]; then
+                        echo "$pid"
+                        break
+                    fi
+                done
+                ;;
+        esac
+    done < <(
+        {
+            pgrep -u "$uid" -f "$pattern" 2>/dev/null || true
+            if [ "$is_regex" = false ]; then
+                pgrep -u "$uid" -x "$pat_short" 2>/dev/null || true
+            fi
+        } | awk '!seen[$0]++'
+    )
+}
+
+# Helper to terminate background processes safely by exact matched PIDs
 close_proc() {
     local pattern="$1"
     local name="$2"
+    local pids=()
+    mapfile -t pids < <(find_matching_pids "$pattern")
 
-    if pgrep -f "$pattern" >/dev/null 2>&1; then
+    if [ "${#pids[@]}" -gt 0 ]; then
         echo "[-] Closing process: $name"
         if [ "$FORCE" = true ]; then
-            pkill -9 -f "$pattern" >/dev/null 2>&1 || true
+            kill -9 "${pids[@]}" >/dev/null 2>&1 || true
         else
-            pkill -f "$pattern" >/dev/null 2>&1 || true
+            kill -TERM "${pids[@]}" >/dev/null 2>&1 || true
         fi
     fi
 }
@@ -125,7 +219,7 @@ stop_from_config() {
 
     # 1. Gracefully close windows via KWin Scripting
     run_kwin_close "$targets_js"
-    sleep 0.8
+    sleep 1.5
 
     # 2. Stop Flatpak apps if active
     if command -v flatpak >/dev/null 2>&1; then
@@ -140,7 +234,7 @@ stop_from_config() {
         IFS='|' read -r action pat app_name <<< "$entry"
         if [ "$action" = "STOP" ]; then
             close_proc "$pat" "$app_name"
-        elif pgrep -f "$pat" >/dev/null 2>&1; then
+        elif [ -n "$(find_matching_pids "$pat")" ]; then
             echo "[i] $app_name left open (use 'stop-workspace --all' to close it as well)."
         fi
     done
@@ -171,7 +265,7 @@ stop_defaults() {
     run_kwin_close "$targets_js"
 
     # Wait briefly for windows to close gracefully
-    sleep 0.8
+    sleep 1.5
 
     # Stop Flatpak app if still running
     if command -v flatpak >/dev/null 2>&1; then
@@ -192,7 +286,7 @@ stop_defaults() {
     if [ "$CLOSE_TERMINAL" = true ]; then
         close_proc "ptyxis" "Ptyxis Terminal"
     else
-        if pgrep -x ptyxis >/dev/null 2>&1; then
+        if [ -n "$(find_matching_pids ptyxis)" ]; then
             echo "[i] Ptyxis Terminal left open (use 'stop-workspace --all' to close the terminal as well)."
         fi
     fi
