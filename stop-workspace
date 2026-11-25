@@ -18,19 +18,19 @@ for arg in "$@"; do
             FORCE=true
             ;;
         -h|--help)
-            echo "Penggunaan: stop-workspace [OPSI]"
-            echo "Menutup semua aplikasi workspace (Desktop 1 - 3)."
+            echo "Usage: stop-workspace [OPTIONS]"
+            echo "Close all workspace applications (Desktops 1 - 3)."
             echo ""
-            echo "Opsi:"
-            echo "  -a, --all    Tutup juga jendela terminal Ptyxis"
-            echo "  -f, --force  Paksa tutup proses jika tidak merespons (kill -9)"
-            echo "  -h, --help   Tampilkan pesan bantuan ini"
+            echo "Options:"
+            echo "  -a, --all    Also close the Ptyxis terminal window"
+            echo "  -f, --force  Force-kill unresponsive processes (kill -9)"
+            echo "  -h, --help   Show this help message"
             exit 0
             ;;
     esac
 done
 
-echo "[*] Menghentikan Workspace..."
+echo "[*] Stopping Workspace..."
 
 # 1. Gracefully close windows via KWin Scripting (Wayland Native)
 if command -v qdbus6 >/dev/null 2>&1; then
@@ -81,16 +81,16 @@ EOF
     rm -f "$tmp_script"
 fi
 
-# Tunggu sejenak agar jendela menutup secara normal
+# Wait briefly for windows to close gracefully
 sleep 0.8
 
-# 2. Pastikan proses background tertutup (SIGTERM / SIGKILL)
+# 2. Ensure background processes are terminated (SIGTERM / SIGKILL)
 close_proc() {
     local pattern="$1"
     local name="$2"
 
     if pgrep -f "$pattern" >/dev/null 2>&1; then
-        echo "[-] Menutup proses: $name"
+        echo "[-] Closing process: $name"
         if [ "$FORCE" = true ]; then
             pkill -9 -f "$pattern" >/dev/null 2>&1 || true
         else
@@ -99,12 +99,12 @@ close_proc() {
     fi
 }
 
-# Tutup Flatpak jika masih aktif
+# Stop Flatpak app if still running
 if command -v flatpak >/dev/null 2>&1; then
     flatpak kill app.twintaillauncher.ttl >/dev/null 2>&1 || true
 fi
 
-# Tutup proses-proses aplikasi
+# Stop application processes
 close_proc "antigravity-ide" "Antigravity IDE"
 close_proc "brave" "Brave Browser"
 close_proc "gnome-text-editor" "Gnome Text Editor"
@@ -119,18 +119,18 @@ if [ "$CLOSE_TERMINAL" = true ]; then
     close_proc "ptyxis" "Ptyxis Terminal"
 else
     if pgrep -x ptyxis >/dev/null 2>&1; then
-        echo "[i] Ptyxis Terminal tetap dibuka (gunakan 'stop-workspace --all' untuk menutup terminal juga)."
+        echo "[i] Ptyxis Terminal left open (use 'stop-workspace --all' to close the terminal as well)."
     fi
 fi
 
-# 3. Kembalikan fokus tampilan ke Desktop 1
+# 3. Return focus to Desktop 1
 if command -v qdbus6 >/dev/null 2>&1; then
     qdbus6 org.kde.KWin /KWin org.kde.KWin.setCurrentDesktop 1 >/dev/null 2>&1 || true
 fi
 
-# 4. Kirim notifikasi desktop
+# 4. Send desktop notification
 if command -v notify-send >/dev/null 2>&1; then
-    notify-send -i preferences-desktop-display "Workspace Setup" "Semua aplikasi workspace telah berhasil ditutup!"
+    notify-send -i preferences-desktop-display "Workspace Setup" "All workspace applications have been closed!"
 fi
 
-echo "[✓] Selesai! Semua aplikasi workspace telah dihentikan."
+echo "[✓] Done! All workspace applications have been stopped."

@@ -3,27 +3,27 @@
 # Auto-Start Workspace Setup for CachyOS / KDE Plasma
 # ========================================================
 
-# Pastikan environment runtime D-Bus tersedia
+# Ensure D-Bus runtime environment is available
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
 
-echo "[*] Membuka Workspace Setup..."
+echo "[*] Starting Workspace Setup..."
 
-# Terapkan ulang aturan KWin
+# Reapply KWin rules
 if command -v qdbus6 >/dev/null 2>&1; then
     qdbus6 org.kde.KWin /KWin org.kde.KWin.reconfigure >/dev/null 2>&1 || true
 fi
 
-# Helper function untuk cek apakah proses sudah jalan
+# Helper function to check whether a process is already running
 launch_if_not_running() {
     local proc_pattern="$1"
     shift
     local cmd=("$@")
 
     if pgrep -f "$proc_pattern" >/dev/null 2>&1; then
-        echo "[-] Sudah berjalan: $proc_pattern"
+        echo "[-] Already running: $proc_pattern"
     else
-        echo "[+] Membuka: ${cmd[0]}"
+        echo "[+] Launching: ${cmd[0]}"
         "${cmd[@]}" >/dev/null 2>&1 &
         sleep 0.8
     fi
@@ -36,7 +36,7 @@ launch_if_not_running "antigravity-ide" antigravity-ide "/home/anzu/Documents/Co
 # 2. Ptyxis Terminal
 launch_if_not_running "ptyxis" ptyxis
 
-# 3. Gnome Text Editor (Catatan CachyOS)
+# 3. GNOME Text Editor (CachyOS Notes)
 if [ -f "/home/anzu/Documents/Cachyos Gnome Command.md" ]; then
     launch_if_not_running "gnome-text-editor" gnome-text-editor "/home/anzu/Documents/Cachyos Gnome Command.md"
 fi
@@ -65,7 +65,7 @@ launch_if_not_running "twintaillauncher" flatpak run app.twintaillauncher.ttl
 launch_if_not_running "omen-gui" omen-gui
 
 # --- KWin Window Organizer (Wayland Native) ---
-# Memastikan semua jendela yang baru dibuka dipindahkan ke Desktop masing-masing
+# Ensure all newly opened windows are moved to their respective Desktops
 organize_windows() {
     if ! command -v qdbus6 >/dev/null 2>&1; then
         return
@@ -119,21 +119,21 @@ for (var i = 0; i < clients.length; i++) {
     rm -f "$tmp_script"
 }
 
-echo "[*] Mengatur penempatan jendela di Desktop 1, 2, dan 3..."
+echo "[*] Organizing windows across Desktops 1, 2, and 3..."
 organize_windows
 
-# Beri jeda sejenak untuk aplikasi yang proses render jendelanya agak lambat (Flatpak / Electron)
+# Wait briefly for applications whose windows take longer to render (Flatpak / Electron)
 sleep 2
 organize_windows
 
-# Pastikan fokus kembali ke Desktop 1
+# Ensure focus returns to Desktop 1
 if command -v qdbus6 >/dev/null 2>&1; then
     qdbus6 org.kde.KWin /KWin org.kde.KWin.setCurrentDesktop 1 >/dev/null 2>&1 || true
 fi
 
-# Kirim notifikasi jika notify-send tersedia
+# Send a notification if notify-send is available
 if command -v notify-send >/dev/null 2>&1; then
-    notify-send -i preferences-desktop-display "Workspace Setup" "Semua aplikasi setup kerja & santai telah berhasil dibuka!"
+    notify-send -i preferences-desktop-display "Workspace Setup" "All work & leisure workspace apps have been launched!"
 fi
 
-echo "[✓] Selesai! Semua aplikasi telah ditempatkan pada Desktop 1-3."
+echo "[✓] Done! All applications have been placed on Desktops 1-3."
