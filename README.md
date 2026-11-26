@@ -2,6 +2,10 @@
 
 GUI and Bash scripts to launch (`start-workspace`), stop (`stop-workspace`), and configure (`setup-workspace-gui` / `setup-workspace`) your apps across **KDE Plasma 6 (Wayland)** Virtual Desktops.
 
+## Preview
+
+![Workspace Setup GUI](Preview/windows.png)
+
 ## Quick Start
 
 ```bash
