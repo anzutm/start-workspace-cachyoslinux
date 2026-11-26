@@ -76,7 +76,7 @@ CONFIG_HEADER = """# Workspace Manager Configuration
 #   COMMAND        : Shell command to launch the application
 """
 
-FIELD_CODE_RE = re.compile(r"\s+%[fFuUdDnNickvm]")
+FIELD_CODE_RE = re.compile(r'(?:\s+|^)(?:"%[fFuUdDnNickvm]"|\'%[fFuUdDnNickvm]\'|%[fFuUdDnNickvm])')
 
 
 @dataclass
@@ -253,12 +253,12 @@ callDBus("org.startworkspace.GuiWinProbe", "/Probe", "org.startworkspace.GuiWinP
 
 
 def scan_desktop_apps() -> list[dict[str, str]]:
-    """Scan installed .desktop files for quick app selection."""
+    """Scan installed .desktop files for quick app selection (user dirs override system dirs)."""
     dirs = [
         "/usr/share/applications",
-        str(Path.home() / ".local/share/applications"),
         "/var/lib/flatpak/exports/share/applications",
         str(Path.home() / ".local/share/flatpak/exports/share/applications"),
+        str(Path.home() / ".local/share/applications"),
     ]
     apps: dict[str, dict[str, str]] = {}
     for d in dirs:
@@ -290,15 +290,18 @@ def scan_desktop_apps() -> list[dict[str, str]]:
             if not name or not exec_raw:
                 continue
             exec_clean = FIELD_CODE_RE.sub("", exec_raw).strip()
+            if not exec_clean:
+                continue
             desktop_id = Path(path).stem
             wm_class = data.get("StartupWMClass", "")
             classes = [c for c in [wm_class, desktop_id] if c]
             try:
-                first_tok = Path(shlex.split(exec_clean)[0]).name
-                if first_tok and first_tok not in classes:
-                    classes.append(first_tok)
+                tokens = shlex.split(exec_clean)
+                first_tok = Path(tokens[0]).name if tokens else ""
             except ValueError:
-                first_tok = exec_clean.split()[0]
+                first_tok = Path(exec_clean.split()[0].strip("\"'")).name
+            if first_tok and first_tok not in classes:
+                classes.append(first_tok)
 
             apps[desktop_id] = {
                 "name": name,
@@ -585,6 +588,7 @@ class EntryDialog(QDialog):
     def _browse_cmd(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Select Executable or Script", str(Path.home()))
         if path:
+            self.close_only_cb.setChecked(False)
             quoted = f'"{path}"' if " " in path else path
             self.cmd_edit.setText(quoted)
             if not self.name_edit.text().strip():
@@ -598,6 +602,7 @@ class EntryDialog(QDialog):
         dlg = AppPickerDialog(self, apps=self.installed_apps)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.selected_app:
             app = dlg.selected_app
+            self.close_only_cb.setChecked(False)
             self.name_edit.setText(app["name"])
             self.cmd_edit.setText(app["exec"])
             self.pattern_edit.setText(app["pattern"])
@@ -706,8 +711,8 @@ class MainWindow(QMainWindow):
 
         self.entries: list[WorkspaceEntry] = []
         self.proc: QProcess | None = None
-        self.installed_apps = scan_desktop_apps()
-        self.app_icons = {a["name"].lower(): a["icon"] for a in self.installed_apps if a.get("icon")}
+        self.installed_apps: list[dict[str, str]] | None = None
+        self.app_icons: dict[str, str] = {}
         self.tab_filters: list[int | None] = [None]
 
         central = QWidget()
@@ -812,7 +817,6 @@ class MainWindow(QMainWindow):
         preset_menu = tools_menu.addMenu(QIcon.fromTheme("view-refresh"), "Reset with Preset")
         preset_menu.addAction("Auto-detect my installed apps (Recommended)", lambda: self._apply_preset("auto"))
         preset_menu.addAction("Minimal starter setup", lambda: self._apply_preset("minimal"))
-        preset_menu.addAction("Default CachyOS setup", lambda: self._apply_preset("personal"))
         tools_menu.addAction(QIcon.fromTheme("dialog-information"), "Check System Health (Doctor)", self._run_doctor)
         tools_menu.addAction(QIcon.fromTheme("window-duplicate"), "Inspect Open Windows", self._inspect_windows)
         tools_menu.addAction(QIcon.fromTheme("folder-open"), "Open Config Folder", self._open_config_folder)
@@ -961,10 +965,16 @@ class MainWindow(QMainWindow):
         save_config(self.entries)
         self.statusBar().showMessage(f"✓ Configuration saved to {CONFIG_FILE}", 5000)
 
+    def _get_installed_apps(self) -> list[dict[str, str]]:
+        if self.installed_apps is None:
+            self.installed_apps = scan_desktop_apps()
+            self.app_icons = {a["name"].lower(): a["icon"] for a in self.installed_apps if a.get("icon")}
+        return self.installed_apps
+
     def _add_entry(self) -> None:
         filt = self._current_filter()
         default_desk = filt if filt and filt > 0 else 1
-        dlg = EntryDialog(default_desktop=default_desk, parent=self, installed_apps=self.installed_apps)
+        dlg = EntryDialog(default_desktop=default_desk, parent=self, installed_apps=self._get_installed_apps())
         if dlg.exec() == QDialog.DialogCode.Accepted:
             entry = dlg.build_entry()
             self.entries.append(entry)
@@ -976,7 +986,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Edit App", "Please select an application first.")
             return
         cur_row = self.table.currentRow()
-        dlg = EntryDialog(self.entries[real_idx], parent=self, installed_apps=self.installed_apps)
+        dlg = EntryDialog(self.entries[real_idx], parent=self, installed_apps=self._get_installed_apps())
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self.entries[real_idx] = dlg.build_entry()
             self._persist(f"Updated '{self.entries[real_idx].name}'.")
@@ -1066,6 +1076,9 @@ class MainWindow(QMainWindow):
         if res.returncode == 0:
             self.statusBar().showMessage(f"Login autostart {action}d.", 4000)
         else:
+            self.autostart_cb.blockSignals(True)
+            self.autostart_cb.setChecked(AUTOSTART_FILE.exists())
+            self.autostart_cb.blockSignals(False)
             QMessageBox.warning(self, "Autostart", res.stderr or res.stdout)
 
     def _install_cli(self) -> None:

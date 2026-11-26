@@ -7,6 +7,8 @@ set -u
 
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+# shellcheck source=workspace-lib.sh
+source "$SCRIPT_DIR/workspace-lib.sh"
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/start-workspace"
 CONFIG_FILE="$CONFIG_DIR/workspace.conf"
@@ -47,7 +49,7 @@ Commands:
   gui                    Launch the PyQt6 graphical setup window (setup-workspace-gui)
   init [--preset MODE] [--force]
                          Create workspace.conf (~/.config/start-workspace/workspace.conf)
-                         Presets: auto (default, detects installed apps), minimal, personal
+                         Presets: auto (default, detects installed apps), minimal
   list                   List all configured workspace applications
   add [OPTIONS]          Add a new application entry (prompts for missing fields)
   edit [INDEX] [OPTIONS] Edit an existing entry by its list number
@@ -89,136 +91,47 @@ write_config_header() {
 EOF
 }
 
-detect_terminal_entry() {
-    if command -v ptyxis >/dev/null 2>&1; then
-        echo "1|Ptyxis Terminal|ptyxis|org.gnome.Ptyxis,ptyxis|keep_open|ptyxis"
-    elif command -v konsole >/dev/null 2>&1; then
-        echo "1|Konsole|konsole|org.kde.konsole,konsole|keep_open|konsole"
-    elif command -v kitty >/dev/null 2>&1; then
-        echo "1|Kitty Terminal|kitty|kitty|keep_open|kitty"
-    elif command -v alacritty >/dev/null 2>&1; then
-        echo "1|Alacritty|alacritty|Alacritty,alacritty|keep_open|alacritty"
-    elif command -v ghostty >/dev/null 2>&1; then
-        echo "1|Ghostty|ghostty|com.mitchellh.ghostty,ghostty|keep_open|ghostty"
-    elif command -v gnome-terminal >/dev/null 2>&1; then
-        echo "1|GNOME Terminal|gnome-terminal|org.gnome.Terminal,gnome-terminal-server|keep_open|gnome-terminal"
-    fi
-}
-
-detect_file_manager_entry() {
-    if command -v nautilus >/dev/null 2>&1; then
-        echo "1|Files (Nautilus)|nautilus|org.gnome.Nautilus,nautilus||nautilus"
-    elif command -v dolphin >/dev/null 2>&1; then
-        echo "1|Files (Dolphin)|dolphin|org.kde.dolphin,dolphin||dolphin"
-    elif command -v thunar >/dev/null 2>&1; then
-        echo "1|Files (Thunar)|thunar|Thunar,thunar||thunar"
-    fi
-}
-
-detect_browser_entry() {
-    if command -v chromium >/dev/null 2>&1; then
-        echo "2|Chromium Browser|chromium|chromium,Chromium,chromium-browser||chromium"
-    elif command -v firefox >/dev/null 2>&1; then
-        echo "2|Firefox|firefox|firefox,org.mozilla.firefox||firefox"
-    elif command -v brave >/dev/null 2>&1; then
-        echo "2|Brave Browser|brave|brave-browser||brave"
-    elif command -v google-chrome >/dev/null 2>&1; then
-        echo "2|Google Chrome|chrome|google-chrome||google-chrome"
-    elif command -v zen-browser >/dev/null 2>&1; then
-        echo "2|Zen Browser|zen-browser|zen,zen-alpha||zen-browser"
-    fi
-}
-
-write_personal_config() {
-    # personal preset: author's own setup (paths hardcoded for the original author's machine)
-    write_auto_config
-}
-
 write_minimal_config() {
     write_config_header
-    local term_entry fm_entry browser_entry
-    term_entry="$(detect_terminal_entry)"
-    fm_entry="$(detect_file_manager_entry)"
-    browser_entry="$(detect_browser_entry)"
+    local entries=()
+    mapfile -t entries < <(get_default_entries)
 
+    local added_term=false added_fm=false added_browser=false
     {
         echo ""
-        echo "# --- Desktop 1 (Work) ---"
-        [ -n "$term_entry" ] && echo "$term_entry"
-        [ -n "$fm_entry" ] && echo "$fm_entry"
-        echo ""
-        echo "# --- Desktop 2 (Web) ---"
-        [ -n "$browser_entry" ] && echo "$browser_entry"
+        echo "# --- Minimal Workspace ---"
+        local line desktop name proc classes flags cmd
+        for line in "${entries[@]}"; do
+            IFS='|' read -r desktop name proc classes flags cmd <<< "$line"
+            if [[ ",$flags," == *",keep_open,"* ]] && [ "$added_term" = false ]; then
+                echo "$line"
+                added_term=true
+            elif [ "$desktop" = "1" ] && [[ "$proc" =~ ^(nautilus|dolphin|thunar)$ ]] && [ "$added_fm" = false ]; then
+                echo "$line"
+                added_fm=true
+            elif [ "$desktop" = "2" ] && [ "$added_browser" = false ]; then
+                echo "$line"
+                added_browser=true
+            fi
+        done
     } >> "$CONFIG_FILE"
 }
 
 write_auto_config() {
     write_config_header
-    local term_entry fm_entry browser_entry
-    term_entry="$(detect_terminal_entry)"
-    fm_entry="$(detect_file_manager_entry)"
-    browser_entry="$(detect_browser_entry)"
-
     {
         echo ""
-        echo "# --- Desktop 1 (Coding & Notes) ---"
-        if command -v antigravity-ide >/dev/null 2>&1; then
-            echo "1|Antigravity IDE|antigravity-ide|antigravity-ide||antigravity-ide"
-        elif command -v code >/dev/null 2>&1; then
-            echo "1|VS Code|code|code,Code||code"
-        elif command -v codium >/dev/null 2>&1; then
-            echo "1|VSCodium|codium|codium,VSCodium||codium"
-        elif command -v zeditor >/dev/null 2>&1; then
-            echo "1|Zed|zeditor|dev.zed.Zed,zeditor||zeditor"
-        fi
-
-        [ -n "$term_entry" ] && echo "$term_entry"
-
-        if command -v gnome-text-editor >/dev/null 2>&1; then
-            echo "1|GNOME Text Editor|gnome-text-editor|org.gnome.TextEditor||gnome-text-editor"
-        elif command -v kate >/dev/null 2>&1; then
-            echo "1|Kate|kate|org.kde.kate,kate||kate"
-        fi
-
-        [ -n "$fm_entry" ] && echo "$fm_entry"
-
-        echo ""
-        echo "# --- Desktop 2 (Entertainment & Web) ---"
-        [ -n "$browser_entry" ] && echo "$browser_entry"
-
-        # (Add your custom local apps here with 'setup-workspace add' or via the GUI)
-
-        echo ""
-        echo "# --- Desktop 3 (System, Utilities & Gaming) ---"
-        if command -v flatpak >/dev/null 2>&1 && flatpak info app.twintaillauncher.ttl >/dev/null 2>&1; then
-            echo "3|Twintail Launcher|twintaillauncher|Twintaillauncher,twintaillauncher,app.twintaillauncher.ttl|flatpak|flatpak run app.twintaillauncher.ttl"
-            echo "0|Wuthering Waves|client-win64-shipping.exe|client-win64-shipping.exe|close_only|"
-        elif command -v steam >/dev/null 2>&1; then
-            echo "3|Steam|steam|steam||steam"
-        elif command -v lutris >/dev/null 2>&1; then
-            echo "3|Lutris|lutris|net.lutris.Lutris,lutris||lutris"
-        fi
-
-        if command -v omen-gui >/dev/null 2>&1; then
-            echo "3|Omen Space|omen-gui|org.hp.OmenSpace,omen-gui||omen-gui"
-        fi
-
-        if command -v resources >/dev/null 2>&1; then
-            echo "3|Resources Monitor|resources|net.nokyan.Resources,org.gnome.Resources,resources||resources"
-        elif command -v plasma-systemmonitor >/dev/null 2>&1; then
-            echo "3|System Monitor|plasma-systemmonitor|org.kde.plasma-systemmonitor||plasma-systemmonitor"
-        fi
+        get_default_entries
     } >> "$CONFIG_FILE"
 }
 
 write_config_by_preset() {
     local preset="${1:-auto}"
     case "$preset" in
-        auto)     write_auto_config ;;
-        personal) write_personal_config ;;
-        minimal)  write_minimal_config ;;
+        auto|personal) write_auto_config ;;
+        minimal)       write_minimal_config ;;
         *)
-            err "Unknown preset: $preset (valid: auto, minimal, personal)"
+            err "Unknown preset: $preset (valid: auto, minimal)"
             return 1
             ;;
     esac
@@ -698,7 +611,7 @@ cmd_install() {
 Type=Application
 Name=Workspace Setup
 Comment=Configure workspace applications across KDE Virtual Desktops
-Exec=$BIN_DIR/setup-workspace-gui
+Exec="$BIN_DIR/setup-workspace-gui"
 Icon=preferences-desktop-display
 Terminal=false
 Categories=Settings;System;Qt;KDE;
@@ -757,7 +670,7 @@ cmd_autostart() {
 Type=Application
 Name=Start Workspace
 Comment=Launch configured workspace applications across Virtual Desktops
-Exec=$exec_path
+Exec="$exec_path"
 Icon=preferences-desktop-display
 Terminal=false
 X-KDE-autostart-phase=2
@@ -905,13 +818,23 @@ cmd_doctor() {
         [[ ",$flags," == *",close_only,"* ]] || [ "$desktop" = "0" ] && continue
 
         local cmd_args=()
-        if [ -n "$cmd" ]; then
-            mapfile -t cmd_args < <(printf '%s\n' "$cmd" | xargs -n1 printf '%s\n' 2>/dev/null || true)
-        fi
-        local bin="${cmd_args[0]:-}"
-        if [ -z "$bin" ]; then
+        if [ -z "$cmd" ]; then
             warn "$name: empty command"
             continue
+        fi
+        if ! split_command_args "$cmd"; then
+            warn "$name: invalid command quoting ($cmd)"
+            continue
+        fi
+        cmd_args=("${SPLIT_CMD_ARGS[@]}")
+        local bin="${cmd_args[0]:-}"
+        if [ "$bin" = "env" ]; then
+            local arg
+            for arg in "${cmd_args[@]:1}"; do
+                [[ "$arg" == *=* ]] && continue
+                bin="$arg"
+                break
+            done
         fi
 
         if [ -x "$bin" ] || command -v "$bin" >/dev/null 2>&1; then

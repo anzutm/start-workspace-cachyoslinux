@@ -3,9 +3,12 @@
 # Auto-Start Workspace Setup for CachyOS / KDE Plasma
 # ========================================================
 
-# Ensure D-Bus runtime environment is available
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=workspace-lib.sh
+source "$SCRIPT_DIR/workspace-lib.sh"
 
 CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/start-workspace/workspace.conf"
 
@@ -16,99 +19,6 @@ if command -v qdbus6 >/dev/null 2>&1; then
     qdbus6 org.kde.KWin /KWin org.kde.KWin.reconfigure >/dev/null 2>&1 || true
 fi
 
-# Return PIDs matching proc_pattern, excluding system/mount helpers (e.g. psd fuse-overlayfs)
-# and unrelated commands whose arguments merely mention the pattern.
-find_matching_pids() {
-    local pattern="$1"
-    [ -z "$pattern" ] && return 0
-
-    local uid
-    uid="$(id -u)"
-
-    local is_regex=false
-    case "$pattern" in
-        *[[:space:]]*|*'|'*|*'^'*|*'$'*|*'\\'*|*'*'*|*'+'*|*'?'*|*'('*|*')'*|*'['*|*']'*|*'{'*|*'}'*)
-            is_regex=true
-            ;;
-    esac
-
-    local pat_short="${pattern:0:15}"
-    local pid
-    while IFS= read -r pid; do
-        [ -z "$pid" ] && continue
-        [ "$pid" = "$$" ] || [ "$pid" = "${BASHPID:-$$}" ] && continue
-        [ -r "/proc/$pid/comm" ] || continue
-
-        local comm exe_path exe_base
-        IFS= read -r comm < "/proc/$pid/comm" || continue
-        exe_path="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
-        exe_base="${exe_path##*/}"
-
-        case "$comm" in
-            fuse-overlayfs|fusermount|fusermount3|profile-sync-da|systemd|pgrep|pkill|start-workspace|stop-workspace|setup-workspace)
-                continue
-                ;;
-        esac
-        case "$exe_base" in
-            fuse-overlayfs|fusermount|fusermount3|profile-sync-daemon|systemd|pgrep|pkill|start-workspace|stop-workspace|setup-workspace)
-                continue
-                ;;
-        esac
-
-        local argv=()
-        mapfile -d '' -t argv < "/proc/$pid/cmdline" 2>/dev/null || true
-        local arg0="${argv[0]:-}"
-        local arg0_base="${arg0##*/}"
-        arg0_base="${arg0_base##*\\}"
-        local arg1_base="${argv[1]:-}"
-        arg1_base="${arg1_base##*/}"
-
-        case "$arg0_base" in
-            start-workspace|stop-workspace|setup-workspace|setup-workspace-gui)
-                continue
-                ;;
-        esac
-        case "$arg1_base" in
-            start-workspace|stop-workspace|setup-workspace|setup-workspace-gui)
-                continue
-                ;;
-        esac
-
-        if [ "$is_regex" = true ]; then
-            echo "$pid"
-            continue
-        fi
-
-        if [ "$comm" = "$pat_short" ] || [ "$exe_base" = "$pattern" ] || [ "$exe_path" = "$pattern" ] || [ "$arg0_base" = "$pattern" ] || [ "$arg0" = "$pattern" ]; then
-            echo "$pid"
-            continue
-        fi
-
-        case "$exe_base" in
-            sh|bash|dash|zsh|python|python3*|node|nodejs|electron*|flatpak|bwrap|wine*|proton*|env)
-                local i
-                for ((i = 1; i < ${#argv[@]}; i++)); do
-                    local a="${argv[i]}"
-                    local a_base="${a##*/}"
-                    a_base="${a_base##*\\}"
-                    if [ "$a" = "$pattern" ] || [ "$a_base" = "$pattern" ]; then
-                        echo "$pid"
-                        break
-                    fi
-                done
-                ;;
-        esac
-    done < <(
-        {
-            pgrep -u "$uid" -f "$pattern" 2>/dev/null || true
-            if [ "$is_regex" = false ]; then
-                pgrep -u "$uid" -x "$pat_short" 2>/dev/null || true
-            fi
-        } | awk '!seen[$0]++'
-    )
-}
-
-# Helper function to check whether a process is already running
 launch_if_not_running() {
     local proc_pattern="$1"
     shift
@@ -119,22 +29,20 @@ launch_if_not_running() {
     else
         echo "[+] Launching: ${cmd[0]}"
         "${cmd[@]}" </dev/null >/dev/null 2>&1 &
-        sleep 0.8
+        sleep 0.3
     fi
 }
 
-CUSTOM_RULES_JS=""
+RULES_JS_BODY=""
 
-launch_from_config() {
-    local config_lines=()
-    while IFS= read -r line || [ -n "$line" ]; do
-        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-        config_lines+=("$line")
-    done < "$CONFIG_FILE"
-
+launch_entries() {
+    local entries=("$@")
     local rule_lines=""
     local line
-    for line in "${config_lines[@]}"; do
+
+    for line in "${entries[@]}"; do
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+
         local desktop name proc_pattern win_classes flags cmd_str
         IFS='|' read -r desktop name proc_pattern win_classes flags cmd_str <<< "$line"
 
@@ -142,13 +50,24 @@ launch_from_config() {
         [[ ! "$desktop" =~ ^[1-9][0-9]*$ ]] && continue
         [ -z "$cmd_str" ] && continue
 
-        local cmd_args=()
-        mapfile -t cmd_args < <(printf '%s\n' "$cmd_str" | xargs -n1 printf '%s\n' 2>/dev/null || true)
-        [ "${#cmd_args[@]}" -eq 0 ] && continue
+        if ! split_command_args "$cmd_str"; then
+            echo "[!] Skipping '$name': invalid command quoting ($cmd_str)" >&2
+            continue
+        fi
+        local cmd_args=("${SPLIT_CMD_ARGS[@]}")
 
         # Optional existence checks
         if [[ ",$flags," == *",check_cmd,"* ]]; then
-            if [ ! -x "${cmd_args[0]}" ] && ! command -v "${cmd_args[0]}" >/dev/null 2>&1; then
+            local check_bin="${cmd_args[0]}"
+            if [ "$check_bin" = "env" ]; then
+                local arg
+                for arg in "${cmd_args[@]:1}"; do
+                    [[ "$arg" == *=* ]] && continue
+                    check_bin="$arg"
+                    break
+                done
+            fi
+            if [ ! -x "$check_bin" ] && ! command -v "$check_bin" >/dev/null 2>&1; then
                 continue
             fi
         fi
@@ -162,6 +81,7 @@ launch_from_config() {
         if [ -n "$win_classes" ]; then
             local cls_arr=()
             IFS=',' read -ra cls_arr <<< "$win_classes"
+            local cls
             for cls in "${cls_arr[@]}"; do
                 cls="${cls//\"/}"
                 cls="${cls//\\/}"
@@ -171,110 +91,27 @@ launch_from_config() {
         fi
     done
 
-    CUSTOM_RULES_JS="$rule_lines"
+    RULES_JS_BODY="$rule_lines"
 }
 
-launch_defaults() {
-    # No workspace.conf found. Auto-detect and launch whatever is installed.
-    # --- Desktop 1 (Coding & Notes) ---
-    if command -v antigravity-ide >/dev/null 2>&1; then
-        launch_if_not_running "antigravity-ide" antigravity-ide
-    elif command -v code >/dev/null 2>&1; then
-        launch_if_not_running "code" code
-    elif command -v codium >/dev/null 2>&1; then
-        launch_if_not_running "codium" codium
-    fi
-
-    if command -v ptyxis >/dev/null 2>&1; then
-        launch_if_not_running "ptyxis" ptyxis
-    elif command -v konsole >/dev/null 2>&1; then
-        launch_if_not_running "konsole" konsole
-    elif command -v kitty >/dev/null 2>&1; then
-        launch_if_not_running "kitty" kitty
-    fi
-
-    if command -v gnome-text-editor >/dev/null 2>&1; then
-        launch_if_not_running "gnome-text-editor" gnome-text-editor
-    elif command -v kate >/dev/null 2>&1; then
-        launch_if_not_running "kate" kate
-    fi
-
-    if command -v nautilus >/dev/null 2>&1; then
-        launch_if_not_running "nautilus" nautilus
-    elif command -v dolphin >/dev/null 2>&1; then
-        launch_if_not_running "dolphin" dolphin
-    fi
-
-    # --- Desktop 2 (Web) ---
-    if command -v chromium >/dev/null 2>&1; then
-        launch_if_not_running "chromium" chromium
-    elif command -v firefox >/dev/null 2>&1; then
-        launch_if_not_running "firefox" firefox
-    elif command -v brave >/dev/null 2>&1; then
-        launch_if_not_running "brave" brave
-    fi
-
-    # --- Desktop 3 (Gaming / Utilities) ---
-    if command -v steam >/dev/null 2>&1; then
-        launch_if_not_running "steam" steam
-    fi
-
-    if command -v resources >/dev/null 2>&1; then
-        launch_if_not_running "resources" resources
-    elif command -v plasma-systemmonitor >/dev/null 2>&1; then
-        launch_if_not_running "plasma-systemmonitor" plasma-systemmonitor
-    fi
-
-    echo "[i] Tip: run 'setup-workspace init' to customize your workspace."
-}
-
+ACTIVE_ENTRIES=()
 if [ -f "$CONFIG_FILE" ]; then
     echo "[*] Using configuration: $CONFIG_FILE"
-    launch_from_config
+    mapfile -t ACTIVE_ENTRIES < "$CONFIG_FILE"
 else
-    launch_defaults
+    echo "[i] Tip: run 'setup-workspace init' (or 'setup-workspace gui') to customize your workspace."
+    mapfile -t ACTIVE_ENTRIES < <(get_default_entries)
 fi
 
+launch_entries "${ACTIVE_ENTRIES[@]}"
+
 # --- KWin Window Organizer (Wayland Native) ---
-# Ensure all newly opened windows are moved to their respective Desktops
 organize_windows() {
-    if ! command -v qdbus6 >/dev/null 2>&1; then
-        return
-    fi
-
-    local rules_body
-    if [ -f "$CONFIG_FILE" ]; then
-        rules_body="$CUSTOM_RULES_JS"
-    else
-        rules_body='
-    // Desktop 1 (Index 0)
-    "antigravity-ide": 0,
-    "org.gnome.Ptyxis": 0,
-    "org.gnome.TextEditor": 0,
-    "org.gnome.Nautilus": 0,
-    "nautilus": 0,
-    "org.kde.dolphin": 0,
-    "dolphin": 0,
-
-    // Desktop 2 (Index 1)
-    "chromium": 1,
-    "Chromium": 1,
-    "chromium-browser": 1,
-    "anibase": 1,
-    "AniBase": 1,
-
-    // Desktop 3 (Index 2)
-    "Twintaillauncher": 2,
-    "twintaillauncher": 2,
-    "app.twintaillauncher.ttl": 2,
-    "client-win64-shipping.exe": 2,
-    "org.hp.OmenSpace": 2,
-    "omen-gui": 2'
-    fi
+    [ -z "$RULES_JS_BODY" ] && return 0
 
     local js_code="
 var rules = {
-${rules_body}
+${RULES_JS_BODY}
 };
 
 var clients = workspace.windowList();
@@ -287,22 +124,14 @@ for (var i = 0; i < clients.length; i++) {
     }
 }
 "
-    local tmp_script="/tmp/kwin_organize_$$.js"
-    echo "$js_code" > "$tmp_script"
-
-    local script_id
-    script_id=$(qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript "$tmp_script" "organize_$$" 2>/dev/null)
-    qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.start >/dev/null 2>&1
-    sleep 0.2
-    qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript "organize_$$" >/dev/null 2>&1
-    rm -f "$tmp_script"
+    run_kwin_js "$js_code" "kwin_organize"
 }
 
 echo "[*] Organizing windows across configured Desktops..."
 organize_windows
 
 # Wait briefly for applications whose windows take longer to render (Flatpak / Electron)
-sleep 2
+sleep 1.2
 organize_windows
 
 # Ensure focus returns to Desktop 1
@@ -312,7 +141,7 @@ fi
 
 # Send a notification if notify-send is available
 if command -v notify-send >/dev/null 2>&1; then
-    notify-send -i preferences-desktop-display "Workspace Setup" "All work & leisure workspace apps have been launched!"
+    notify-send -i preferences-desktop-display "Workspace Setup" "All workspace apps have been launched!"
 fi
 
 echo "[✓] Done! All applications have been placed on their configured Desktops."
